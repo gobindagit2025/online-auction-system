@@ -59,6 +59,11 @@ export const authAPI = {
     headers: { 'Content-Type': 'multipart/form-data' }
   }),
   changePassword: (data) => api.post('/users/change-password/', data),
+
+  // Forgot / Reset Password
+  forgotPassword: (data) => api.post('/users/forgot-password/', data),
+  verifyOTP: (data) => api.post('/users/verify-otp/', data),
+  resetPassword: (data) => api.post('/users/reset-password/', data),
 };
 
 // ===================== PRODUCTS =====================

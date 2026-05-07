@@ -19,6 +19,7 @@ const Navbar = () => {
     return '/buyer';
   };
 
+
   return (
     <nav className="navbar navbar-expand-lg navbar-dark" style={{ background: 'linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%)' }}>
       <div className="container">
@@ -59,6 +60,9 @@ const Navbar = () => {
                     <li><Link className="dropdown-item" to="/profile">
                       <i className="bi bi-person me-2"></i>Profile
                     </Link></li>
+                    <Link to="/change-password" className="dropdown-item">
+  <i className="bi bi-lock me-2"></i>Change Password
+</Link>
                     {user.role !== 'ADMIN' && (
                       <li><Link className="dropdown-item" to="/wallet">
                         <i className="bi bi-wallet2 me-2" style={{ color: '#e94560' }}></i>

@@ -14,6 +14,10 @@ from .views import (
     AdminUserListView,
     AdminUserDetailView,
     AdminBlockUserView,
+    # Forgot / Reset Password
+    ForgotPasswordView,
+    VerifyOTPView,
+    ResetPasswordView,
 )
 
 urlpatterns = [
@@ -26,6 +30,11 @@ urlpatterns = [
     # Profile
     path('profile/', UserProfileView.as_view(), name='user-profile'),
     path('change-password/', ChangePasswordView.as_view(), name='change-password'),
+
+    # Forgot / Reset Password (public — no auth required)
+    path('forgot-password/', ForgotPasswordView.as_view(), name='forgot-password'),
+    path('verify-otp/', VerifyOTPView.as_view(), name='verify-otp'),
+    path('reset-password/', ResetPasswordView.as_view(), name='reset-password'),
 
     # Admin endpoints
     path('admin/users/', AdminUserListView.as_view(), name='admin-user-list'),

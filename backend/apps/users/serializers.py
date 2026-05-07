@@ -87,13 +87,22 @@ class ChangePasswordSerializer(serializers.Serializer):
 
     old_password = serializers.CharField(required=True)
     new_password = serializers.CharField(required=True, validators=[validate_password])
+    confirm_new_password = serializers.CharField(required=True)
 
     def validate_old_password(self, value):
         """Check old password is correct."""
         user = self.context['request'].user
         if not user.check_password(value):
-            raise serializers.ValidationError("Old password is incorrect.")
+            raise serializers.ValidationError("Current password is incorrect.")
         return value
+
+    def validate(self, attrs):
+        """Ensure new passwords match."""
+        if attrs['new_password'] != attrs['confirm_new_password']:
+            raise serializers.ValidationError(
+                {"confirm_new_password": "New passwords do not match."}
+            )
+        return attrs
 
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
@@ -133,3 +142,37 @@ class AdminUserUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ['is_blocked', 'is_active', 'role']
+
+
+# ===================== FORGOT / RESET PASSWORD =====================
+
+class ForgotPasswordSerializer(serializers.Serializer):
+    """Serializer for requesting a password reset OTP."""
+    email = serializers.EmailField(required=True)
+
+    def validate_email(self, value):
+        """Check that a user with this email exists."""
+        if not User.objects.filter(email=value).exists():
+            raise serializers.ValidationError("No account found with this email address.")
+        return value
+
+
+class VerifyOTPSerializer(serializers.Serializer):
+    """Serializer for verifying the OTP sent to email."""
+    email = serializers.EmailField(required=True)
+    otp = serializers.CharField(required=True, min_length=6, max_length=6)
+
+
+class ResetPasswordSerializer(serializers.Serializer):
+    """Serializer for resetting password after OTP verification."""
+    email = serializers.EmailField(required=True)
+    otp = serializers.CharField(required=True, min_length=6, max_length=6)
+    new_password = serializers.CharField(required=True, validators=[validate_password])
+    confirm_new_password = serializers.CharField(required=True)
+
+    def validate(self, attrs):
+        if attrs['new_password'] != attrs['confirm_new_password']:
+            raise serializers.ValidationError(
+                {"confirm_new_password": "Passwords do not match."}
+            )
+        return attrs

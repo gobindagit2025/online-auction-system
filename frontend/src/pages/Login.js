@@ -55,7 +55,7 @@ const Login = () => {
               </div>
             </div>
 
-            <div className="mb-4">
+            <div className="mb-2">
               <label className="form-label fw-semibold">Password</label>
               <div className="input-group">
                 <span className="input-group-text"><i className="bi bi-lock"></i></span>
@@ -64,6 +64,13 @@ const Login = () => {
                   onChange={e => setForm({ ...form, password: e.target.value })}
                   required />
               </div>
+            </div>
+
+            {/* Forgot Password link */}
+            <div className="text-end mb-4">
+              <Link to="/forgot-password" style={{ color: '#e94560', fontSize: '0.875rem', fontWeight: '500' }}>
+                Forgot Password?
+              </Link>
             </div>
 
             <button type="submit" className="btn w-100 fw-bold py-2"
