@@ -11,6 +11,57 @@ const getImageUrl = (img) => {
   return `${API_BASE}${img.startsWith('/') ? '' : '/media/'}${img}`;
 };
 
+// Returns ordered list of image URLs for the gallery, falling back to the
+// legacy single `image` field for backward compatibility.
+const getGalleryImages = (product) => {
+  if (product?.images?.length > 0) {
+    return product.images
+      .slice()
+      .sort((a, b) => a.order - b.order)
+      .map(im => getImageUrl(im.image));
+  }
+  if (product?.image) {
+    return [getImageUrl(product.image)];
+  }
+  return ['https://via.placeholder.com/600x400?text=No+Image'];
+};
+
+const ProductImageGallery = ({ images, title }) => {
+  const [activeIndex, setActiveIndex] = useState(0);
+  const imgs = images && images.length > 0 ? images : ['https://via.placeholder.com/600x400?text=No+Image'];
+
+  return (
+    <div>
+      <img
+        src={imgs[activeIndex]}
+        alt={title}
+        style={{ width: '100%', maxHeight: '400px', objectFit: 'cover', borderRadius: '16px 16px 0 0' }}
+      />
+      {imgs.length > 1 && (
+        <div className="d-flex gap-2 p-3 pt-2 flex-wrap">
+          {imgs.map((src, idx) => (
+            <img
+              key={idx}
+              src={src}
+              alt={`${title}-thumb-${idx}`}
+              onClick={() => setActiveIndex(idx)}
+              width="64"
+              height="64"
+              style={{
+                objectFit: 'cover',
+                borderRadius: '8px',
+                cursor: 'pointer',
+                border: idx === activeIndex ? '3px solid #e94560' : '1px solid #e0e0e0',
+                opacity: idx === activeIndex ? 1 : 0.8,
+              }}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
 const CountdownTimer = ({ endTime }) => {
   const [timeLeft, setTimeLeft] = useState('');
   useEffect(() => {
@@ -102,11 +153,7 @@ const ProductDetail = () => {
           {/* Left: Image & Info */}
           <div className="col-lg-7">
             <div className="card border-0 shadow-sm" style={{ borderRadius: '16px' }}>
-              <img
-                src={getImageUrl(product.image)}
-                alt={product.title}
-                style={{ width: '100%', maxHeight: '400px', objectFit: 'cover', borderRadius: '16px 16px 0 0' }}
-              />
+              <ProductImageGallery images={getGalleryImages(product)} title={product.title} />
               <div className="card-body p-4">
                 <div className="d-flex justify-content-between align-items-start">
                   <h2 className="fw-bold">{product.title}</h2>

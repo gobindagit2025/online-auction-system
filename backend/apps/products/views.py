@@ -14,6 +14,7 @@ from .serializers import (
     ProductCreateSerializer,
     ProductListSerializer,
     ProductDetailSerializer,
+    ProductAddImagesSerializer,
 )
 from apps.users.permissions import IsSellerOrAdmin, IsAdminRole, IsNotBlocked
 
@@ -153,3 +154,33 @@ class AdminProductStatusView(APIView):
             'message': f'Product status updated to {new_status}.',
             'product': ProductDetailSerializer(product).data
         })
+
+
+class SellerProductAddImagesView(APIView):
+    """
+    POST /api/products/<id>/add-images/
+    Seller: Upload additional images for their own product
+    (up to a combined maximum of 4 images total).
+    """
+    permission_classes = [IsSellerOrAdmin, IsNotBlocked]
+
+    def post(self, request, pk):
+        if request.user.role == 'ADMIN':
+            product = Product.objects.filter(pk=pk).first()
+        else:
+            product = Product.objects.filter(pk=pk, seller=request.user).first()
+
+        if not product:
+            return Response({'error': 'Product not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = ProductAddImagesSerializer(
+            data=request.data,
+            context={'product': product, 'request': request}
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+
+        return Response({
+            'message': 'Images added successfully.',
+            'product': ProductDetailSerializer(product).data
+        }, status=status.HTTP_201_CREATED)

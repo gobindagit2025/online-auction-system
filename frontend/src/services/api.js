@@ -74,6 +74,9 @@ export const productAPI = {
     headers: { 'Content-Type': 'multipart/form-data' }
   }),
   update: (id, data) => api.patch(`/products/${id}/update/`, data),
+  addImages: (id, data) => api.post(`/products/${id}/add-images/`, data, {
+    headers: { 'Content-Type': 'multipart/form-data' }
+  }),
   myProducts: () => api.get('/products/my-products/'),
   adminAll: (params) => api.get('/products/admin/all/', { params }),
   adminUpdateStatus: (id, status) => api.patch(`/products/admin/${id}/status/`, { status }),

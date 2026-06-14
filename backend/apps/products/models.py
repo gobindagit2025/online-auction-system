@@ -104,3 +104,28 @@ class Product(models.Model):
         elif self.status == self.Status.ACTIVE and now > self.auction_end_time:
             self.status = self.Status.CLOSED
             self.save(update_fields=['status'])
+
+
+class ProductImage(models.Model):
+    """
+    Additional images for a Product. The first image (lowest `order`)
+    is treated as the primary thumbnail. Existing single `image` field
+    on Product remains untouched for backward compatibility.
+    """
+    product = models.ForeignKey(
+        Product,
+        on_delete=models.CASCADE,
+        related_name='images'
+    )
+    image = models.ImageField(upload_to='product_images/')
+    order = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'product_images'
+        ordering = ['order', 'id']
+        verbose_name = 'Product Image'
+        verbose_name_plural = 'Product Images'
+
+    def __str__(self):
+        return f"Image {self.order} for {self.product.title}"

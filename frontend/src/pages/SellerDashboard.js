@@ -230,18 +230,52 @@ const AddProductModal = ({ onSuccess }) => {
     title: '', description: '', category: '', starting_price: '',
     auction_start_time: '', auction_end_time: ''
   });
-  const [image, setImage] = useState(null);
+  const [images, setImages] = useState([]);
+  const [imagePreviews, setImagePreviews] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [pendingProduct, setPendingProduct] = useState(null);
 
+  const MIN_IMAGES = 1;
+  const MAX_IMAGES = 4;
+
+  const handleImageChange = (e) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+
+    const combined = [...images, ...files].slice(0, MAX_IMAGES);
+    if (images.length + files.length > MAX_IMAGES) {
+      setError(`You can upload a maximum of ${MAX_IMAGES} images.`);
+    } else {
+      setError('');
+    }
+    setImages(combined);
+    setImagePreviews(combined.map(f => URL.createObjectURL(f)));
+  };
+
+  const removeImage = (index) => {
+    const updated = images.filter((_, i) => i !== index);
+    setImages(updated);
+    setImagePreviews(updated.map(f => URL.createObjectURL(f)));
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
-    setLoading(true);
     setError('');
+
+    if (images.length < MIN_IMAGES) {
+      setError(`Please upload at least ${MIN_IMAGES} product image.`);
+      return;
+    }
+    if (images.length > MAX_IMAGES) {
+      setError(`A maximum of ${MAX_IMAGES} images is allowed.`);
+      return;
+    }
+
+    setLoading(true);
     const fd = new FormData();
     Object.entries(form).forEach(([k, v]) => fd.append(k, v));
-    if (image) fd.append('image', image);
+    images.forEach(img => fd.append('images', img));
     try {
       const res = await productAPI.create(fd);
       const newProduct = res.data.product || res.data;
@@ -312,9 +346,32 @@ const AddProductModal = ({ onSuccess }) => {
                       value={form.auction_end_time} onChange={e => setForm({ ...form, auction_end_time: e.target.value })} required />
                   </div>
                   <div className="col-12">
-                    <label className="form-label fw-semibold">Product Image</label>
-                    <input type="file" className="form-control" accept="image/*"
-                      onChange={e => setImage(e.target.files[0])} />
+                    <label className="form-label fw-semibold">
+                      Product Images * <small className="text-muted">(Min 1, Max 4 — first image is the primary thumbnail)</small>
+                    </label>
+                    <input type="file" className="form-control" accept="image/*" multiple
+                      onChange={handleImageChange} />
+                    {imagePreviews.length > 0 && (
+                      <div className="d-flex gap-2 mt-2 flex-wrap">
+                        {imagePreviews.map((src, idx) => (
+                          <div key={idx} className="position-relative">
+                            <img src={src} alt={`preview-${idx}`} width="80" height="80"
+                              style={{ objectFit: 'cover', borderRadius: '8px', border: idx === 0 ? '2px solid #e94560' : '1px solid #e0e0e0' }} />
+                            {idx === 0 && (
+                              <span className="badge bg-danger position-absolute top-0 start-0" style={{ fontSize: '0.6rem' }}>
+                                Primary
+                              </span>
+                            )}
+                            <button type="button" className="btn btn-sm btn-light position-absolute top-0 end-0 p-0"
+                              style={{ width: '20px', height: '20px', lineHeight: '1', borderRadius: '50%' }}
+                              onClick={() => removeImage(idx)}>
+                              <i className="bi bi-x"></i>
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <small className="text-muted d-block mt-1">{images.length}/{MAX_IMAGES} images selected</small>
                   </div>
                 </div>
                 <div className="mt-4 d-flex gap-2">
@@ -343,11 +400,123 @@ const AddProductModal = ({ onSuccess }) => {
   );
 };
 
+// ─── Add More Images Modal (Seller) ───────────────────────────────────────
+const AddImagesModal = ({ product, onClose, onUploaded }) => {
+  const [images, setImages] = useState([]);
+  const [previews, setPreviews] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const MAX_IMAGES = 4;
+  const existingCount = product?.images_count || 0;
+  const remaining = Math.max(MAX_IMAGES - existingCount, 0);
+
+  const handleFileChange = (e) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+
+    const combined = [...images, ...files].slice(0, remaining);
+    if (images.length + files.length > remaining) {
+      setError(`You can only add ${remaining} more image(s) (maximum ${MAX_IMAGES} total).`);
+    } else {
+      setError('');
+    }
+    setImages(combined);
+    setPreviews(combined.map(f => URL.createObjectURL(f)));
+  };
+
+  const removeImage = (index) => {
+    const updated = images.filter((_, i) => i !== index);
+    setImages(updated);
+    setPreviews(updated.map(f => URL.createObjectURL(f)));
+  };
+
+  const handleUpload = async () => {
+    setError('');
+    if (images.length === 0) {
+      setError('Please select at least 1 image to upload.');
+      return;
+    }
+    if (images.length > remaining) {
+      setError(`You can only add ${remaining} more image(s) (maximum ${MAX_IMAGES} total).`);
+      return;
+    }
+
+    setLoading(true);
+    const fd = new FormData();
+    images.forEach(img => fd.append('images', img));
+    try {
+      await productAPI.addImages(product.id, fd);
+      onUploaded();
+      onClose();
+    } catch (err) {
+      const data = err.response?.data;
+      setError(typeof data === 'object' ? Object.values(data).flat().join(' ') : 'Failed to upload images.');
+    }
+    setLoading(false);
+  };
+
+  if (!product) return null;
+
+  return (
+    <div className="modal fade show" style={{ display: 'block', background: 'rgba(0,0,0,0.5)' }} tabIndex="-1">
+      <div className="modal-dialog modal-dialog-centered">
+        <div className="modal-content">
+          <div className="modal-header border-0">
+            <h5 className="fw-bold mb-0">
+              <i className="bi bi-images me-2" style={{ color: '#e94560' }}></i>Add More Images
+            </h5>
+            <button type="button" className="btn-close" onClick={onClose}></button>
+          </div>
+          <div className="modal-body">
+            <p className="text-muted small mb-2">
+              <strong>{product.title}</strong> currently has {existingCount} of {MAX_IMAGES} images.
+              You can add up to {remaining} more.
+            </p>
+            {error && <div className="alert alert-danger py-2 small">{error}</div>}
+            <input type="file" className="form-control" accept="image/*" multiple
+              disabled={remaining <= 0}
+              onChange={handleFileChange} />
+            {previews.length > 0 && (
+              <div className="d-flex gap-2 mt-3 flex-wrap">
+                {previews.map((src, idx) => (
+                  <div key={idx} className="position-relative">
+                    <img src={src} alt={`new-${idx}`} width="80" height="80"
+                      style={{ objectFit: 'cover', borderRadius: '8px', border: '1px solid #e0e0e0' }} />
+                    <button type="button" className="btn btn-sm btn-light position-absolute top-0 end-0 p-0"
+                      style={{ width: '20px', height: '20px', lineHeight: '1', borderRadius: '50%' }}
+                      onClick={() => removeImage(idx)}>
+                      <i className="bi bi-x"></i>
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <small className="text-muted d-block mt-2">{images.length}/{remaining} new image(s) selected</small>
+          </div>
+          <div className="modal-footer border-0">
+            <button type="button" className="btn btn-light" onClick={onClose}>Cancel</button>
+            <button type="button" className="btn fw-bold"
+              style={{ backgroundColor: '#e94560', color: 'white' }}
+              disabled={loading || remaining <= 0 || images.length === 0}
+              onClick={handleUpload}>
+              {loading
+                ? <span className="spinner-border spinner-border-sm"></span>
+                : <><i className="bi bi-upload me-2"></i>Upload</>}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // ─── Main ─────────────────────────────────────────────────────────────────
 const SellerDashboard = () => {
   const [products, setProducts] = useState([]);
   const [wallet, setWallet] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [imageModalProduct, setImageModalProduct] = useState(null);
 
   const fetchProducts = async () => {
     setLoading(true);
@@ -487,9 +656,16 @@ const SellerDashboard = () => {
                         <td><small>{new Date(p.auction_end_time).toLocaleString()}</small></td>
                         <td><StatusBadge status={p.status} /></td>
                         <td>
-                          <Link to={`/products/${p.id}`} className="btn btn-sm btn-outline-primary">
+                          <Link to={`/products/${p.id}`} className="btn btn-sm btn-outline-primary me-1">
                             <i className="bi bi-eye"></i>
                           </Link>
+                          {(p.images_count || 0) < 4 && (
+                            <button type="button" className="btn btn-sm btn-outline-secondary"
+                              title="Add more images"
+                              onClick={() => setImageModalProduct(p)}>
+                              <i className="bi bi-images"></i>
+                            </button>
+                          )}
                         </td>
                       </tr>
                     ))}
@@ -521,6 +697,14 @@ const SellerDashboard = () => {
       </div>
 
       <AddProductModal onSuccess={fetchProducts} />
+
+      {imageModalProduct && (
+        <AddImagesModal
+          product={imageModalProduct}
+          onClose={() => setImageModalProduct(null)}
+          onUploaded={fetchProducts}
+        />
+      )}
     </div>
   );
 };

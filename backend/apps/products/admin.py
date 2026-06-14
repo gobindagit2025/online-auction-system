@@ -1,6 +1,11 @@
 """Products App - Django Admin Registration"""
 from django.contrib import admin
-from .models import Product
+from .models import Product, ProductImage
+
+
+class ProductImageInline(admin.TabularInline):
+    model = ProductImage
+    extra = 0
 
 
 @admin.register(Product)
@@ -9,3 +14,4 @@ class ProductAdmin(admin.ModelAdmin):
     list_filter = ['status', 'category']
     search_fields = ['title', 'seller__username']
     readonly_fields = ['current_highest_bid', 'created_at', 'updated_at']
+    inlines = [ProductImageInline]
