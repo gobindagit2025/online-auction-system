@@ -2,10 +2,11 @@
 Products App - Serializers
 """
 
+import re
 from django.utils import timezone
 from rest_framework import serializers
 
-from .models import Product, ProductImage
+from .models import Product, ProductImage, PickupAddress
 
 
 class ProductImageSerializer(serializers.ModelSerializer):
@@ -196,3 +197,81 @@ class ProductDetailSerializer(serializers.ModelSerializer):
     def get_total_bids(self, obj):
         """Count total bids on this product."""
         return obj.bids.count()
+
+
+# ─────────────────────────────────────────────────────────
+# Seller Pickup Address (Feature: Seller Pickup Address Collection)
+# ─────────────────────────────────────────────────────────
+
+PHONE_REGEX = re.compile(r'^[0-9+\-\s()]{7,15}$')
+
+
+class PickupAddressSerializer(serializers.ModelSerializer):
+    """
+    Serializer for creating/updating the item-specific pickup address
+    for a single auction listing. `product` is assigned by the view
+    based on the URL, so it is not accepted from the request body.
+    """
+
+    class Meta:
+        model = PickupAddress
+        fields = [
+            'id', 'full_name', 'phone_number', 'email',
+            'address_line1', 'address_line2', 'city', 'state',
+            'postal_code', 'country', 'created_at', 'updated_at',
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+    def validate_full_name(self, value):
+        if not value.strip():
+            raise serializers.ValidationError("Full name is required.")
+        return value.strip()
+
+    def validate_phone_number(self, value):
+        if not PHONE_REGEX.match(value.strip()):
+            raise serializers.ValidationError("Enter a valid phone number.")
+        return value.strip()
+
+    def validate_address_line1(self, value):
+        if not value.strip():
+            raise serializers.ValidationError("Address Line 1 is required.")
+        return value.strip()
+
+    def validate_postal_code(self, value):
+        if not value.strip():
+            raise serializers.ValidationError("Postal code is required.")
+        return value.strip()
+
+
+class AdminPickupAddressSerializer(serializers.ModelSerializer):
+    """
+    Admin-facing serializer that surfaces pickup address details alongside
+    the related auction listing and seller information
+    (Feature: Admin Visibility - Seller Pickup Information).
+    """
+
+    listing_id = serializers.IntegerField(source='product.id', read_only=True)
+    auction_title = serializers.CharField(source='product.title', read_only=True)
+    seller_name = serializers.CharField(source='product.seller.username', read_only=True)
+    pickup_address = serializers.SerializerMethodField()
+    contact_info = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PickupAddress
+        fields = [
+            'id', 'listing_id', 'auction_title', 'seller_name',
+            'full_name', 'phone_number', 'email',
+            'address_line1', 'address_line2', 'city', 'state',
+            'postal_code', 'country',
+            'pickup_address', 'contact_info', 'created_at',
+        ]
+
+    def get_pickup_address(self, obj):
+        parts = [
+            obj.address_line1, obj.address_line2,
+            obj.city, obj.state, obj.postal_code, obj.country,
+        ]
+        return ', '.join([p for p in parts if p])
+
+    def get_contact_info(self, obj):
+        return f"{obj.full_name} | {obj.phone_number} | {obj.email}"

@@ -9,12 +9,14 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from django_filters.rest_framework import DjangoFilterBackend
 
-from .models import Product
+from .models import Product, PickupAddress
 from .serializers import (
     ProductCreateSerializer,
     ProductListSerializer,
     ProductDetailSerializer,
     ProductAddImagesSerializer,
+    PickupAddressSerializer,
+    AdminPickupAddressSerializer,
 )
 from apps.users.permissions import IsSellerOrAdmin, IsAdminRole, IsNotBlocked
 
@@ -184,3 +186,75 @@ class SellerProductAddImagesView(APIView):
             'message': 'Images added successfully.',
             'product': ProductDetailSerializer(product).data
         }, status=status.HTTP_201_CREATED)
+
+
+# ─────────────────────────────────────────────────────────
+# Seller Pickup Address (Feature: Seller Pickup Address Collection)
+# ─────────────────────────────────────────────────────────
+
+class PickupAddressView(APIView):
+    """
+    GET  /api/products/<id>/pickup-address/
+        Seller (or Admin): retrieve the pickup address saved for this listing.
+    POST /api/products/<id>/pickup-address/
+        Seller: save/update the pickup address for their own listing,
+        immediately after successful listing-fee payment.
+    """
+    permission_classes = [IsSellerOrAdmin, IsNotBlocked]
+
+    def _get_product(self, pk, user):
+        if user.role == 'ADMIN':
+            return Product.objects.filter(pk=pk).first()
+        return Product.objects.filter(pk=pk, seller=user).first()
+
+    def get(self, request, pk):
+        product = self._get_product(pk, request.user)
+        if not product:
+            return Response({'error': 'Product not found or not yours.'}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            pickup_address = product.pickup_address
+        except PickupAddress.DoesNotExist:
+            return Response({'error': 'No pickup address saved for this listing yet.'}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response(PickupAddressSerializer(pickup_address).data)
+
+    def post(self, request, pk):
+        product = self._get_product(pk, request.user)
+        if not product:
+            return Response({'error': 'Product not found or not yours.'}, status=status.HTTP_404_NOT_FOUND)
+
+        # Pickup address is collected immediately after the listing-fee
+        # payment, so require that the listing fee has been paid first.
+        listing_fee = getattr(product, 'listing_fee', None)
+        if listing_fee is None or listing_fee.status not in ['PAID', 'REFUNDED']:
+            return Response(
+                {'error': 'Listing fee must be paid before adding a pickup address.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        serializer = PickupAddressSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        # One pickup address per listing — create on first save,
+        # update in place if the seller revisits this page.
+        pickup_address, created = PickupAddress.objects.update_or_create(
+            product=product,
+            defaults=serializer.validated_data
+        )
+
+        return Response({
+            'message': 'Pickup address saved successfully.',
+            'pickup_address': PickupAddressSerializer(pickup_address).data,
+        }, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+
+
+class AdminPickupAddressListView(generics.ListAPIView):
+    """
+    GET /api/products/admin/pickup-addresses/
+    Admin: view all seller pickup addresses across all listings
+    (Feature: Admin Visibility - Seller Pickup Information).
+    """
+    serializer_class = AdminPickupAddressSerializer
+    permission_classes = [IsAdminRole]
+    queryset = PickupAddress.objects.select_related('product', 'product__seller').all()

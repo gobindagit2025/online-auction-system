@@ -150,6 +150,16 @@ class ListingFeePayment(models.Model):
     refund_amount  = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
     created_at     = models.DateTimeField(auto_now_add=True)
 
+    # Refund history / audit fields (Admin Listing Fee Refund System)
+    refunded_by    = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='listing_fee_refunds',
+        help_text="Admin user who processed the refund"
+    )
+    refund_reason  = models.TextField(blank=True, null=True, help_text="Reason provided by admin for the refund")
+
     class Meta:
         db_table = 'listing_fee_payments'
         ordering = ['-created_at']
@@ -244,3 +254,42 @@ class WithdrawalRequest(models.Model):
 
     def __str__(self):
         return f"Withdrawal {self.user.username} ₹{self.amount} → {self.upi_id} [{self.status}]"
+
+
+# ─────────────────────────────────────────────────────────
+# 7.  Buyer Delivery Address  (Feature: Buyer Delivery Address Collection)
+# ─────────────────────────────────────────────────────────
+class DeliveryAddress(models.Model):
+    """
+    Delivery address provided by the winning bidder for a completed
+    auction order. Linked to the `Payment` record (which represents the
+    completed transaction/order) via a OneToOne relation, so each
+    completed order has at most one delivery address.
+    """
+
+    payment = models.OneToOneField(
+        Payment,
+        on_delete=models.CASCADE,
+        related_name='delivery_address'
+    )
+
+    full_name = models.CharField(max_length=150)
+    phone_number = models.CharField(max_length=15)
+    email = models.EmailField()
+    address_line1 = models.CharField(max_length=255)
+    address_line2 = models.CharField(max_length=255, blank=True, null=True)
+    city = models.CharField(max_length=100)
+    state = models.CharField(max_length=100)
+    postal_code = models.CharField(max_length=20)
+    country = models.CharField(max_length=100)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'delivery_addresses'
+        verbose_name = 'Delivery Address'
+        verbose_name_plural = 'Delivery Addresses'
+
+    def __str__(self):
+        return f"Delivery address for order #{self.payment_id}"

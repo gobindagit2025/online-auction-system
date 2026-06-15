@@ -17,6 +17,10 @@ import AdminDashboard from './pages/AdminDashboard';
 import WalletPage from './pages/WalletPage';
 import ForgotPassword from './pages/ForgotPassword';
 import ChangePassword from './pages/ChangePassword';
+import PickupAddressPage from './pages/PickupAddressPage';
+import DeliveryAddressPage from './pages/DeliveryAddressPage';
+import ProfilePage from './pages/ProfilePage';
+import OrderDetail from './pages/OrderDetail';
 
 function App() {
   return (
@@ -38,6 +42,34 @@ function App() {
           <Route path="/change-password" element={
             <ProtectedRoute allowedRoles={['ADMIN', 'SELLER', 'BUYER']}>
               <ChangePassword />
+            </ProtectedRoute>
+          } />
+
+          {/* My Profile — requires login (Feature: User Profile Information Page) */}
+          <Route path="/profile" element={
+            <ProtectedRoute allowedRoles={['ADMIN', 'SELLER', 'BUYER']}>
+              <ProfilePage />
+            </ProtectedRoute>
+          } />
+
+          {/* Seller Pickup Address — shown after listing-fee payment (Feature: Seller Pickup Address Collection) */}
+          <Route path="/seller/pickup-address/:productId" element={
+            <ProtectedRoute allowedRoles={['SELLER']}>
+              <PickupAddressPage />
+            </ProtectedRoute>
+          } />
+
+          {/* Buyer Delivery Address — shown after winning-bid payment (Feature: Buyer Delivery Address Collection) */}
+          <Route path="/buyer/delivery-address/:paymentId" element={
+            <ProtectedRoute allowedRoles={['BUYER']}>
+              <DeliveryAddressPage />
+            </ProtectedRoute>
+          } />
+
+          {/* Order Details — buyer's completed order summary + delivery address */}
+          <Route path="/orders/:paymentId" element={
+            <ProtectedRoute allowedRoles={['BUYER', 'ADMIN']}>
+              <OrderDetail />
             </ProtectedRoute>
           } />
 

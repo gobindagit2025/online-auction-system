@@ -7,6 +7,7 @@ Full real payment system:
   - Seller can request withdrawal via UPI
 """
 
+import re
 import uuid
 from decimal import Decimal
 from django.utils import timezone
@@ -14,7 +15,8 @@ from rest_framework import serializers
 
 from .models import (
     Payment, Wallet, WalletTransaction,
-    ListingFeePayment, CompanyWallet, WithdrawalRequest
+    ListingFeePayment, CompanyWallet, WithdrawalRequest,
+    DeliveryAddress,
 )
 from apps.bids.models import Bid
 from apps.products.models import Product
@@ -88,8 +90,9 @@ class InitiateListingFeeSerializer(serializers.Serializer):
 
 
 class ListingFeeSerializer(serializers.ModelSerializer):
-    product_title = serializers.CharField(source='product.title', read_only=True)
-    seller_name   = serializers.CharField(source='seller.username', read_only=True)
+    product_title    = serializers.CharField(source='product.title', read_only=True)
+    seller_name      = serializers.CharField(source='seller.username', read_only=True)
+    refunded_by_name = serializers.SerializerMethodField()
 
     class Meta:
         model  = ListingFeePayment
@@ -97,8 +100,11 @@ class ListingFeeSerializer(serializers.ModelSerializer):
             'id', 'seller_name', 'product_title', 'fee_amount',
             'status', 'payment_method', 'transaction_id',
             'upi_id', 'qr_ref', 'paid_at', 'refunded_at',
-            'refund_amount', 'created_at'
+            'refund_amount', 'refunded_by_name', 'refund_reason', 'created_at'
         ]
+
+    def get_refunded_by_name(self, obj):
+        return obj.refunded_by.username if obj.refunded_by else None
 
 
 # ─────────────────────────────────────────────────────────
@@ -282,3 +288,81 @@ class AdminWithdrawalSerializer(serializers.ModelSerializer):
     class Meta:
         model  = WithdrawalRequest
         fields = ['status', 'admin_note']
+
+
+# ─────────────────────────────────────────────────────────
+# Buyer Delivery Address (Feature: Buyer Delivery Address Collection)
+# ─────────────────────────────────────────────────────────
+
+PHONE_REGEX = re.compile(r'^[0-9+\-\s()]{7,15}$')
+
+
+class DeliveryAddressSerializer(serializers.ModelSerializer):
+    """
+    Serializer for creating/updating the buyer's delivery address for a
+    completed auction order. `payment` is assigned by the view based on
+    the URL, so it is not accepted from the request body.
+    """
+
+    class Meta:
+        model = DeliveryAddress
+        fields = [
+            'id', 'full_name', 'phone_number', 'email',
+            'address_line1', 'address_line2', 'city', 'state',
+            'postal_code', 'country', 'created_at', 'updated_at',
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+    def validate_full_name(self, value):
+        if not value.strip():
+            raise serializers.ValidationError("Full name is required.")
+        return value.strip()
+
+    def validate_phone_number(self, value):
+        if not PHONE_REGEX.match(value.strip()):
+            raise serializers.ValidationError("Enter a valid phone number.")
+        return value.strip()
+
+    def validate_address_line1(self, value):
+        if not value.strip():
+            raise serializers.ValidationError("Address Line 1 is required.")
+        return value.strip()
+
+    def validate_postal_code(self, value):
+        if not value.strip():
+            raise serializers.ValidationError("Postal code is required.")
+        return value.strip()
+
+
+class AdminDeliveryAddressSerializer(serializers.ModelSerializer):
+    """
+    Admin-facing serializer that surfaces delivery address details
+    alongside the related order/payment and winner information
+    (Feature: Admin Visibility - Buyer Delivery Information).
+    """
+
+    order_id = serializers.IntegerField(source='payment.id', read_only=True)
+    auction_title = serializers.CharField(source='payment.product.title', read_only=True)
+    winner_name = serializers.CharField(source='payment.buyer.username', read_only=True)
+    delivery_address = serializers.SerializerMethodField()
+    contact_info = serializers.SerializerMethodField()
+
+    class Meta:
+        model = DeliveryAddress
+        fields = [
+            'id', 'order_id', 'auction_title', 'winner_name',
+            'full_name', 'phone_number', 'email',
+            'address_line1', 'address_line2', 'city', 'state',
+            'postal_code', 'country',
+            'delivery_address', 'contact_info', 'created_at',
+        ]
+
+    def get_delivery_address(self, obj):
+        parts = [
+            obj.address_line1, obj.address_line2,
+            obj.city, obj.state, obj.postal_code, obj.country,
+        ]
+        return ', '.join([p for p in parts if p])
+
+    def get_contact_info(self, obj):
+        return f"{obj.full_name} | {obj.phone_number} | {obj.email}"

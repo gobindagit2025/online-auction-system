@@ -59,16 +59,54 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
 
 
 class UserProfileSerializer(serializers.ModelSerializer):
-    """Serializer for viewing and updating user profiles."""
+    """
+    Serializer for viewing and updating the authenticated user's profile
+    (Feature: User Profile Information Page).
+
+    Adds read-only derived statistics (listings created, auctions won,
+    auctions participated in) for display on the "My Profile" page.
+    Email and role are read-only — only Full Name, Phone Number,
+    Profile Picture and Address Information may be updated.
+    """
+
+    full_name = serializers.SerializerMethodField()
+    total_listings_created = serializers.SerializerMethodField()
+    total_auctions_won = serializers.SerializerMethodField()
+    total_auctions_participated = serializers.SerializerMethodField()
 
     class Meta:
         model = User
         fields = [
-            'id', 'username', 'email', 'first_name', 'last_name',
+            'id', 'username', 'email', 'first_name', 'last_name', 'full_name',
             'role', 'phone', 'address', 'profile_image',
-            'is_blocked', 'created_at', 'updated_at'
+            'is_blocked', 'created_at', 'updated_at',
+            'total_listings_created', 'total_auctions_won', 'total_auctions_participated',
         ]
-        read_only_fields = ['id', 'username', 'role', 'is_blocked', 'created_at', 'updated_at']
+        read_only_fields = [
+            'id', 'username', 'email', 'role', 'is_blocked',
+            'created_at', 'updated_at',
+        ]
+
+    def get_full_name(self, obj):
+        """Combine first and last name for display."""
+        return f"{obj.first_name} {obj.last_name}".strip()
+
+    def get_total_listings_created(self, obj):
+        """Total auction listings this user has created (Sellers)."""
+        return obj.products.count()
+
+    def get_total_auctions_won(self, obj):
+        """Total auctions this user has won (highest bidder on closed auctions)."""
+        from apps.bids.models import Bid
+        from apps.products.models import Product
+        return Bid.objects.filter(
+            bidder=obj, is_winning_bid=True, product__status=Product.Status.CLOSED
+        ).count()
+
+    def get_total_auctions_participated(self, obj):
+        """Total distinct auctions this user has placed at least one bid on."""
+        from apps.bids.models import Bid
+        return Bid.objects.filter(bidder=obj).values('product').distinct().count()
 
 
 class UserListSerializer(serializers.ModelSerializer):

@@ -10,6 +10,8 @@ const AdminDashboard = () => {
   const [wallets, setWallets] = useState([]);
   const [withdrawals, setWithdrawals] = useState([]);
   const [listingFees, setListingFees] = useState([]);
+  const [pickupAddresses, setPickupAddresses] = useState([]);
+  const [deliveryAddresses, setDeliveryAddresses] = useState([]);
   const [companyWallet, setCompanyWallet] = useState(null);
   const [activeTab, setActiveTab] = useState('overview');
   const [loading, setLoading] = useState(true);
@@ -18,7 +20,7 @@ const AdminDashboard = () => {
   const fetchAll = async () => {
     setLoading(true);
     try {
-      const [uRes, pRes, bRes, payRes, wRes, wdRes, lfRes] = await Promise.all([
+      const [uRes, pRes, bRes, payRes, wRes, wdRes, lfRes, paRes, daRes] = await Promise.all([
         adminAPI.users(),
         productAPI.adminAll(),
         bidAPI.adminAll(),
@@ -26,6 +28,8 @@ const AdminDashboard = () => {
         adminWalletAPI.allWallets(),
         adminWalletAPI.allWithdrawals(),
         adminWalletAPI.allListingFees(),
+        productAPI.adminPickupAddresses(),
+        paymentAPI.adminDeliveryAddresses(),
       ]);
       setUsers(uRes.data.results || uRes.data);
       setProducts(pRes.data.results || pRes.data);
@@ -34,6 +38,8 @@ const AdminDashboard = () => {
       setWallets(wRes.data.results || wRes.data);
       setWithdrawals(wdRes.data.results || wdRes.data);
       setListingFees(lfRes.data.results || lfRes.data);
+      setPickupAddresses(paRes.data.results || paRes.data);
+      setDeliveryAddresses(daRes.data.results || daRes.data);
 
       // Company wallet
       try {
@@ -108,6 +114,8 @@ const AdminDashboard = () => {
     { key: 'wallets', icon: 'bi-wallet2', label: 'Wallets' },
     { key: 'withdrawals', icon: 'bi-bank', label: `Withdrawals${stats.pendingWithdrawals > 0 ? ` (${stats.pendingWithdrawals})` : ''}` },
     { key: 'fees', icon: 'bi-receipt', label: 'Listing Fees' },
+    { key: 'pickup', icon: 'bi-box-seam', label: `Pickup Addresses (${pickupAddresses.length})` },
+    { key: 'delivery', icon: 'bi-truck', label: `Delivery Addresses (${deliveryAddresses.length})` },
   ];
 
   return (
@@ -458,6 +466,54 @@ const AdminDashboard = () => {
                                   <span className="text-success small">✓ Refunded ₹{parseFloat(lf.refund_amount || 0).toLocaleString()}</span>
                                 )}
                               </td>
+                            </tr>
+                          ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                {/* Pickup Addresses Tab (Feature: Admin Visibility - Seller Pickup Information) */}
+                {activeTab === 'pickup' && (
+                  <div className="table-responsive">
+                    <table className="table table-hover mb-0">
+                      <thead className="table-light">
+                        <tr><th>Listing ID</th><th>Auction Title</th><th>Seller Name</th><th>Pickup Address</th><th>Contact Information</th></tr>
+                      </thead>
+                      <tbody>
+                        {pickupAddresses.length === 0
+                          ? <tr><td colSpan="5" className="text-center py-4 text-muted">No pickup addresses recorded yet.</td></tr>
+                          : pickupAddresses.map(pa => (
+                            <tr key={pa.id}>
+                              <td className="fw-semibold">#{pa.listing_id}</td>
+                              <td>{pa.auction_title}</td>
+                              <td><small>{pa.seller_name}</small></td>
+                              <td><small>{pa.pickup_address}</small></td>
+                              <td><small>{pa.contact_info}</small></td>
+                            </tr>
+                          ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                {/* Delivery Addresses Tab (Feature: Admin Visibility - Buyer Delivery Information) */}
+                {activeTab === 'delivery' && (
+                  <div className="table-responsive">
+                    <table className="table table-hover mb-0">
+                      <thead className="table-light">
+                        <tr><th>Order ID</th><th>Auction Title</th><th>Winner Name</th><th>Delivery Address</th><th>Contact Information</th></tr>
+                      </thead>
+                      <tbody>
+                        {deliveryAddresses.length === 0
+                          ? <tr><td colSpan="5" className="text-center py-4 text-muted">No delivery addresses recorded yet.</td></tr>
+                          : deliveryAddresses.map(da => (
+                            <tr key={da.id}>
+                              <td className="fw-semibold">#{da.order_id}</td>
+                              <td>{da.auction_title}</td>
+                              <td><small>{da.winner_name}</small></td>
+                              <td><small>{da.delivery_address}</small></td>
+                              <td><small>{da.contact_info}</small></td>
                             </tr>
                           ))}
                       </tbody>

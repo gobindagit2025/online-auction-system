@@ -106,6 +106,45 @@ class Product(models.Model):
             self.save(update_fields=['status'])
 
 
+class PickupAddress(models.Model):
+    """
+    Item-specific pickup address provided by the Seller for a single
+    auction listing (Feature: Seller Pickup Address Collection).
+
+    This is intentionally stored per-Product (not on the User profile) so
+    that the listing's pickup details remain frozen even if the seller
+    later edits their account/profile address. Each Product can have at
+    most one PickupAddress (OneToOne).
+    """
+
+    product = models.OneToOneField(
+        Product,
+        on_delete=models.CASCADE,
+        related_name='pickup_address'
+    )
+
+    full_name = models.CharField(max_length=150)
+    phone_number = models.CharField(max_length=15)
+    email = models.EmailField()
+    address_line1 = models.CharField(max_length=255)
+    address_line2 = models.CharField(max_length=255, blank=True, null=True)
+    city = models.CharField(max_length=100)
+    state = models.CharField(max_length=100)
+    postal_code = models.CharField(max_length=20)
+    country = models.CharField(max_length=100)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'pickup_addresses'
+        verbose_name = 'Pickup Address'
+        verbose_name_plural = 'Pickup Addresses'
+
+    def __str__(self):
+        return f"Pickup address for '{self.product.title}'"
+
+
 class ProductImage(models.Model):
     """
     Additional images for a Product. The first image (lowest `order`)

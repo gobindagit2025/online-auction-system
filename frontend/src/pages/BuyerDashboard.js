@@ -1,6 +1,6 @@
 // src/pages/BuyerDashboard.js
 import React, { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { bidAPI, paymentAPI } from '../services/api';
 
 const API_BASE = 'http://localhost:8000';
@@ -39,6 +39,7 @@ const DeadlineCountdown = ({ deadline }) => {
 
 // ─── Payment Modal ─────────────────────────────────────────────────────────
 const PaymentModal = ({ bid, onPaid, onClose }) => {
+  const navigate = useNavigate();
   const [method, setMethod] = useState('UPI');
   const [upiId, setUpiId] = useState('');
   const [cardNo, setCardNo] = useState('');
@@ -70,7 +71,14 @@ const PaymentModal = ({ bid, onPaid, onClose }) => {
       const paymentId = initRes.data.payment.id;
       await paymentAPI.complete({ payment_id: paymentId });
       setStep('success');
-      setTimeout(() => { onPaid(); onClose(); }, 2000);
+      // After successful payment, redirect the winner to the
+      // Delivery Address page for this completed order
+      // (Feature: Buyer Delivery Address Collection).
+      onPaid();
+      setTimeout(() => {
+        onClose();
+        navigate(`/buyer/delivery-address/${paymentId}`);
+      }, 1500);
     } catch (err) {
       const d = err.response?.data;
       setError(typeof d === 'object' ? Object.values(d).flat().join(' ') : 'Payment failed. Try again.');
@@ -78,6 +86,7 @@ const PaymentModal = ({ bid, onPaid, onClose }) => {
     }
     setLoading(false);
   };
+
 
   const payMethods = [
     { key: 'UPI', icon: 'bi-phone', label: 'UPI' },

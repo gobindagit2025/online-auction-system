@@ -80,6 +80,11 @@ export const productAPI = {
   myProducts: () => api.get('/products/my-products/'),
   adminAll: (params) => api.get('/products/admin/all/', { params }),
   adminUpdateStatus: (id, status) => api.patch(`/products/admin/${id}/status/`, { status }),
+
+  // Seller Pickup Address (Feature: Seller Pickup Address Collection)
+  getPickupAddress: (id) => api.get(`/products/${id}/pickup-address/`),
+  savePickupAddress: (id, data) => api.post(`/products/${id}/pickup-address/`, data),
+  adminPickupAddresses: () => api.get('/products/admin/pickup-addresses/'),
 };
 
 // ===================== BIDS =====================
@@ -96,7 +101,13 @@ export const paymentAPI = {
   initiate: (data) => api.post('/payments/initiate/', data),
   complete: (data) => api.post('/payments/complete/', data),
   myPayments: () => api.get('/payments/my-payments/'),
+  detail: (id) => api.get(`/payments/${id}/`),
   adminAll: (params) => api.get('/payments/admin/all/', { params }),
+
+  // Buyer Delivery Address (Feature: Buyer Delivery Address Collection)
+  getDeliveryAddress: (paymentId) => api.get(`/payments/${paymentId}/delivery-address/`),
+  saveDeliveryAddress: (paymentId, data) => api.post(`/payments/${paymentId}/delivery-address/`, data),
+  adminDeliveryAddresses: () => api.get('/payments/admin/delivery-addresses/'),
 };
 
 // ===================== ADMIN =====================
@@ -126,5 +137,5 @@ export const adminWalletAPI = {
   allWithdrawals: (params) => api.get('/payments/admin/withdrawals/', { params }),
   processWithdrawal: (id, data) => api.patch(`/payments/admin/withdrawals/${id}/process/`, data),
   allListingFees: () => api.get('/payments/admin/listing-fees/'),
-  refundListingFee: (productId) => api.post(`/payments/admin/listing-fee/${productId}/refund/`),
+  refundListingFee: (productId, data = {}) => api.post(`/payments/admin/listing-fee/${productId}/refund/`, data),
 };

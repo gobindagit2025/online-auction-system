@@ -1,6 +1,6 @@
 // src/pages/SellerDashboard.js
 import React, { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { productAPI, walletAPI } from '../services/api';
 
 const API_BASE = 'http://localhost:8000';
@@ -17,6 +17,7 @@ const StatusBadge = ({ status }) => {
 
 // ─── Listing Fee Payment Modal ────────────────────────────────────────────
 const ListingFeeModal = ({ product, onPaid, onClose }) => {
+  const navigate = useNavigate();
   const [method, setMethod] = useState('UPI');
   const [upiId, setUpiId] = useState('');
   const [cardNo, setCardNo] = useState('');
@@ -46,7 +47,14 @@ const ListingFeeModal = ({ product, onPaid, onClose }) => {
         card_last4: cardNo.slice(-4),
       });
       setStep('success');
-      setTimeout(() => { onPaid(); onClose(); }, 2000);
+      // Immediately after successful listing-fee payment, redirect the
+      // seller to the Pickup Address page for this specific listing
+      // (Feature: Seller Pickup Address Collection).
+      onPaid();
+      setTimeout(() => {
+        onClose();
+        navigate(`/seller/pickup-address/${product.id}`);
+      }, 1500);
     } catch (err) {
       const d = err.response?.data;
       setError(typeof d === 'object' ? Object.values(d).flat().join(' ') : 'Payment failed. Try again.');
@@ -107,7 +115,7 @@ const ListingFeeModal = ({ product, onPaid, onClose }) => {
                 <i className="bi bi-check-lg text-white fs-2"></i>
               </div>
               <h5 className="fw-bold text-success">Payment Successful!</h5>
-              <p className="text-muted small">Your product is now listed for auction.</p>
+              <p className="text-muted small">Your product is now listed for auction. Redirecting to pickup address...</p>
             </div>
           )}
 

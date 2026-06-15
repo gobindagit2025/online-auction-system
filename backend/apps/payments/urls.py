@@ -24,6 +24,9 @@ from .views import (
     # Admin wallets
     AdminWalletListView,
     AdminCompanyWalletView,
+    # Buyer delivery address
+    DeliveryAddressView,
+    AdminDeliveryAddressListView,
 )
 
 urlpatterns = [
@@ -39,6 +42,12 @@ urlpatterns = [
     path('complete/',                            CompletePaymentView.as_view(),          name='complete-payment'),
     path('check-deadline/<int:product_id>/',     CheckDeadlineView.as_view(),            name='check-deadline'),
     path('my-payments/',                         MyPaymentsView.as_view(),               name='my-payments'),
+
+    # ── Buyer Delivery Address (Feature: Buyer Delivery Address Collection) ──
+    # Registered before the generic '<int:pk>/' detail route so the more
+    # specific path is matched first.
+    path('<int:payment_id>/delivery-address/',   DeliveryAddressView.as_view(),          name='delivery-address'),
+
     path('<int:pk>/',                            PaymentDetailView.as_view(),            name='payment-detail'),
 
     # ── Withdrawal ─────────────────────────────────────
@@ -53,4 +62,5 @@ urlpatterns = [
     path('admin/withdrawals/<int:pk>/process/',  AdminProcessWithdrawalView.as_view(),   name='admin-process-withdrawal'),
     path('admin/wallets/',                       AdminWalletListView.as_view(),          name='admin-wallets'),
     path('admin/company-wallet/',                AdminCompanyWalletView.as_view(),       name='admin-company-wallet'),
+    path('admin/delivery-addresses/',            AdminDeliveryAddressListView.as_view(), name='admin-delivery-addresses'),
 ]

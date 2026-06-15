@@ -1,5 +1,8 @@
 from django.contrib import admin
-from .models import Payment, Wallet, WalletTransaction, ListingFeePayment, CompanyWallet, WithdrawalRequest
+from .models import (
+    Payment, Wallet, WalletTransaction, ListingFeePayment,
+    CompanyWallet, WithdrawalRequest, DeliveryAddress
+)
 
 @admin.register(Wallet)
 class WalletAdmin(admin.ModelAdmin):
@@ -24,3 +27,8 @@ class PaymentAdmin(admin.ModelAdmin):
 @admin.register(WithdrawalRequest)
 class WithdrawalRequestAdmin(admin.ModelAdmin):
     list_display = ['user', 'amount', 'upi_id', 'status', 'created_at', 'processed_at']
+
+@admin.register(DeliveryAddress)
+class DeliveryAddressAdmin(admin.ModelAdmin):
+    list_display = ['payment', 'full_name', 'phone_number', 'city', 'state', 'country', 'created_at']
+    search_fields = ['payment__transaction_id', 'full_name', 'phone_number', 'email']

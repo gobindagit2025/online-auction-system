@@ -12,7 +12,7 @@ from rest_framework.views import APIView
 
 from .models import (
     Payment, Wallet, ListingFeePayment,
-    CompanyWallet, WithdrawalRequest
+    CompanyWallet, WithdrawalRequest, DeliveryAddress
 )
 from .serializers import (
     InitiatePaymentSerializer,
@@ -23,6 +23,8 @@ from .serializers import (
     WalletSerializer,
     WithdrawalRequestSerializer,
     AdminWithdrawalSerializer,
+    DeliveryAddressSerializer,
+    AdminDeliveryAddressSerializer,
     _expire_and_shift,
 )
 from apps.users.permissions import IsBuyerRole, IsAdminRole, IsNotBlocked, IsSellerOrAdmin
@@ -93,42 +95,115 @@ class AdminListingFeeListView(generics.ListAPIView):
 class RefundUnsoldListingFeeView(APIView):
     """
     POST /api/payments/admin/listing-fee/<product_id>/refund/
-    Admin triggers 2.5% refund to seller wallet for unsold products.
+    Admin refunds the 2.5% listing fee to the seller's wallet.
+
+    Eligibility rules (Admin Listing Fee Refund System):
+      - Product must NOT have any bids.
+      - Product must be CANCELLED (admin manually cancelled it before auction completed).
+      - Product must NOT have a winning bidder / completed payment.
+      - Listing fee must NOT have been refunded already.
+      - Product status cannot be PENDING or CLOSED (normal end).
     """
     permission_classes = [IsAdminRole]
 
     def post(self, request, product_id):
+        # ── 1. Fetch product ──────────────────────────────────────────────────
         try:
-            product = Product.objects.get(pk=product_id, status=Product.Status.CLOSED)
+            product = Product.objects.get(pk=product_id)
         except Product.DoesNotExist:
-            return Response({'error': 'Closed product not found.'}, status=status.HTTP_404_NOT_FOUND)
+            return Response({'error': 'Product not found.'}, status=status.HTTP_404_NOT_FOUND)
 
-        # Check no winning payment
+        # ── 2. Status-based eligibility checks ────────────────────────────────
+        if product.status == Product.Status.PENDING:
+            return Response(
+                {'error': 'Refund not allowed: auction is still Pending and has not started yet.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if product.status == Product.Status.CLOSED:
+            return Response(
+                {'error': 'Refund not allowed: auction closed normally. Listing fee is non-refundable after a completed auction.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if product.status == Product.Status.ACTIVE:
+            return Response(
+                {'error': 'Refund not allowed: auction is currently Active. Cancel the product first before requesting a refund.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Only CANCELLED products may be refunded
+        if product.status != Product.Status.CANCELLED:
+            return Response(
+                {'error': f'Refund not allowed: product status is {product.status}.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # ── 3. No bids allowed ────────────────────────────────────────────────
+        bid_count = product.bids.count()
+        if bid_count > 0:
+            return Response(
+                {'error': f'Refund not allowed: product has received {bid_count} bid(s). Listing fee cannot be refunded once bidding has occurred.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # ── 4. No completed payment / winning bidder ──────────────────────────
         if Payment.objects.filter(product=product, status=Payment.Status.COMPLETED).exists():
-            return Response({'error': 'Product was sold — no refund applicable.'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {'error': 'Refund not allowed: product already has a winning bidder with a completed payment.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
+        # ── 5. Listing fee record must exist ─────────────────────────────────
         try:
             lf = product.listing_fee
         except ListingFeePayment.DoesNotExist:
-            return Response({'error': 'No listing fee record found.'}, status=status.HTTP_404_NOT_FOUND)
+            return Response({'error': 'No listing fee record found for this product.'}, status=status.HTTP_404_NOT_FOUND)
 
+        # ── 6. Duplicate-refund guard ─────────────────────────────────────────
         if lf.status == ListingFeePayment.Status.REFUNDED:
-            return Response({'error': 'Already refunded.'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {
+                    'error': 'Refund already processed for this listing fee.',
+                    'refund_details': {
+                        'refund_amount': str(lf.refund_amount),
+                        'refunded_at': lf.refunded_at.isoformat() if lf.refunded_at else None,
+                        'refunded_by': lf.refunded_by.username if lf.refunded_by else None,
+                        'refund_reason': lf.refund_reason,
+                    }
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
+        # ── 7. Accept optional reason from admin ──────────────────────────────
+        refund_reason = request.data.get('reason', 'Admin manually cancelled the listing before any bids were placed.').strip() or 'Admin manually cancelled the listing before any bids were placed.'
+
+        # ── 8. Process refund ─────────────────────────────────────────────────
         refund_amt = round(Decimal('0.025') * product.starting_price, 2)
         seller_wallet, _ = Wallet.objects.get_or_create(user=lf.seller)
         seller_wallet.credit(
             refund_amt,
-            description=f"Partial refund (2.5%) for unsold: {product.title}",
-            ref_id=f"REFUND-{uuid.uuid4().hex[:10].upper()}"
+            description=f"Listing fee refund (2.5%) for cancelled product: {product.title}",
+            ref_id=f"LFREFUND-{uuid.uuid4().hex[:10].upper()}"
         )
+
         lf.status        = ListingFeePayment.Status.REFUNDED
         lf.refund_amount = refund_amt
         lf.refunded_at   = timezone.now()
+        lf.refunded_by   = request.user
+        lf.refund_reason = refund_reason
         lf.save()
 
         return Response({
-            'message': f'₹{refund_amt} (2.5%) refunded to seller BidZone wallet.',
+            'message': f'₹{refund_amt} (2.5% listing fee) successfully refunded to {lf.seller.username}\'s BidZone wallet.',
+            'refund_details': {
+                'refund_amount': str(refund_amt),
+                'refunded_at': lf.refunded_at.isoformat(),
+                'refunded_by': request.user.username,
+                'refund_reason': refund_reason,
+                'seller': lf.seller.username,
+                'product': product.title,
+            },
             'listing_fee': ListingFeeSerializer(lf).data
         })
 
@@ -352,3 +427,77 @@ class AdminCompanyWalletView(APIView):
             'company_balance': str(cw.balance),
             'note': 'Total platform fee earnings (5% per listing, 2.5% retained on unsold)'
         })
+
+
+# ─────────────────────────────────────────────────────────
+# BUYER DELIVERY ADDRESS  (Feature: Buyer Delivery Address Collection)
+# ─────────────────────────────────────────────────────────
+
+class DeliveryAddressView(APIView):
+    """
+    GET  /api/payments/<payment_id>/delivery-address/
+        Buyer (or Admin): retrieve the delivery address saved for this order.
+    POST /api/payments/<payment_id>/delivery-address/
+        Buyer: save/update the delivery address for their own completed
+        order, immediately after successful payment.
+    """
+    permission_classes = [IsBuyerRole, IsNotBlocked]
+
+    def _get_payment(self, pk, user):
+        return Payment.objects.filter(
+            pk=pk, buyer=user, status=Payment.Status.COMPLETED
+        ).first()
+
+    def get(self, request, payment_id):
+        payment = self._get_payment(payment_id, request.user)
+        if not payment:
+            return Response(
+                {'error': 'Completed order not found or not yours.'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        try:
+            delivery_address = payment.delivery_address
+        except DeliveryAddress.DoesNotExist:
+            return Response(
+                {'error': 'No delivery address saved for this order yet.'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        return Response(DeliveryAddressSerializer(delivery_address).data)
+
+    def post(self, request, payment_id):
+        payment = self._get_payment(payment_id, request.user)
+        if not payment:
+            return Response(
+                {'error': 'Completed order not found or not yours.'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        serializer = DeliveryAddressSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        # One delivery address per order — create on first save,
+        # update in place if the buyer revisits this page.
+        delivery_address, created = DeliveryAddress.objects.update_or_create(
+            payment=payment,
+            defaults=serializer.validated_data
+        )
+
+        return Response({
+            'message': 'Delivery address saved successfully.',
+            'delivery_address': DeliveryAddressSerializer(delivery_address).data,
+        }, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+
+
+class AdminDeliveryAddressListView(generics.ListAPIView):
+    """
+    GET /api/payments/admin/delivery-addresses/
+    Admin: view all buyer delivery addresses across all completed orders
+    (Feature: Admin Visibility - Buyer Delivery Information).
+    """
+    serializer_class = AdminDeliveryAddressSerializer
+    permission_classes = [IsAdminRole]
+    queryset = DeliveryAddress.objects.select_related(
+        'payment', 'payment__product', 'payment__buyer'
+    ).all()
