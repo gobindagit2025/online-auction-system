@@ -111,6 +111,89 @@ class ListingFeeSerializer(serializers.ModelSerializer):
 # Winner Payment serializers
 # ─────────────────────────────────────────────────────────
 
+def sweep_closed_auctions_and_start_countdowns():
+    """
+    Find any ACTIVE auctions whose end time has passed, flip them to
+    CLOSED, and immediately start the winner's 24h payment countdown for
+    each one via ensure_payment_countdown().
+
+    This mirrors the existing lazy status-update pattern already used by
+    ProductListView.get_queryset() (Product.update_status / bulk update),
+    so calling it from a payments view does not introduce a new auction
+    "closing" mechanism — it only ensures the countdown is started as soon
+    as any request touches closed/about-to-close auctions, regardless of
+    which page the buyer/admin happens to load first.
+    """
+    now = timezone.now()
+    newly_closing_ids = list(
+        Product.objects.filter(
+            status=Product.Status.ACTIVE,
+            auction_end_time__lt=now
+        ).values_list('id', flat=True)
+    )
+    if newly_closing_ids:
+        Product.objects.filter(id__in=newly_closing_ids).update(status=Product.Status.CLOSED)
+        for closed_product in Product.objects.filter(id__in=newly_closing_ids):
+            ensure_payment_countdown(closed_product)
+
+    # Also cover auctions that were already CLOSED earlier (e.g. by
+    # ProductListView) but never got a countdown started for some reason —
+    # restricted to products with no Payment row yet, so this stays cheap.
+    for closed_product in Product.objects.filter(status=Product.Status.CLOSED, payment__isnull=True):
+        ensure_payment_countdown(closed_product)
+
+
+def ensure_payment_countdown(product):
+    """
+    Ensure a PENDING Payment row (with countdown_start / payment_deadline)
+    exists for a CLOSED product's current winning bidder.
+
+    This is the single source of truth for *starting* the 24-hour winner
+    payment countdown. It is intentionally idempotent and safe to call from
+    multiple places (auction-close detection, payment initiation, dashboard
+    refreshes) without ever creating duplicate countdowns:
+      - Does nothing if the product isn't CLOSED yet (no countdown before close).
+      - Does nothing if there's no winning bid (unsold auction).
+      - Does nothing if a Payment already exists for the current winning bid
+        (covers PENDING/COMPLETED/EXPIRED — never creates a second countdown
+        for the same winner).
+    Returns the Payment row (existing or newly created), or None.
+    """
+    if product.status != Product.Status.CLOSED:
+        return None  # Countdown must never start before the auction actually closes
+
+    winning_bid = Bid.objects.filter(product=product, is_winning_bid=True).first()
+    if not winning_bid:
+        return None  # No bids / no winner — nothing to count down for
+
+    # Already has a countdown/payment for this exact winning bid — don't duplicate it
+    existing = Payment.objects.filter(winning_bid=winning_bid).first()
+    if existing:
+        return existing
+
+    # Also guard against a stray non-expired Payment for this product/buyer pair
+    # (e.g. created via a different path) before creating a fresh one.
+    existing_for_product = Payment.objects.filter(
+        product=product, buyer=winning_bid.bidder
+    ).exclude(status=Payment.Status.EXPIRED).first()
+    if existing_for_product:
+        return existing_for_product
+
+    countdown_start = product.auction_end_time  # countdown begins exactly at auction close, not "now"
+    payment_deadline = countdown_start + timezone.timedelta(hours=24)
+
+    return Payment.objects.create(
+        buyer            = winning_bid.bidder,
+        product          = product,
+        winning_bid      = winning_bid,
+        amount           = winning_bid.amount,
+        status           = Payment.Status.PENDING,
+        transaction_id   = f"TXN-AUTO-{uuid.uuid4().hex[:10].upper()}",
+        countdown_start  = countdown_start,
+        payment_deadline = payment_deadline,
+    )
+
+
 def _expire_and_shift(product, payment=None):
     """
     Mark current winning bid/payment as expired, shift win to next highest bidder.
@@ -306,9 +389,10 @@ class PaymentDetailSerializer(serializers.ModelSerializer):
             remaining = obj.payment_deadline - timezone.now()
             total = int(remaining.total_seconds())
             if total > 0:
-                hours, rem = divmod(total, 3600)
+                days, rem = divmod(total, 86400)
+                hours, rem = divmod(rem, 3600)
                 minutes, secs = divmod(rem, 60)
-                return f"{hours} Hours {minutes} Minutes {secs} Seconds Remaining"
+                return f"{days} Days {hours} Hours {minutes} Minutes {secs} Seconds Remaining"
             return "Deadline Passed"
         return None
 

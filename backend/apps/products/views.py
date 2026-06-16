@@ -35,18 +35,19 @@ class ProductListView(generics.ListAPIView):
     ordering = ['-created_at']
 
     def get_queryset(self):
-        """Auto-update product statuses before listing."""
-        products = Product.objects.all()
-        # Update status for each product based on current time
+        """Auto-update product statuses before listing, and start the
+        winner payment countdown the instant any auction closes
+        (Winner Payment Countdown fix)."""
         now = timezone.now()
-        products.filter(
+        Product.objects.filter(
             status=Product.Status.PENDING,
             auction_start_time__lte=now
         ).update(status=Product.Status.ACTIVE)
-        products.filter(
-            status=Product.Status.ACTIVE,
-            auction_end_time__lt=now
-        ).update(status=Product.Status.CLOSED)
+
+        # Local import avoids a circular import between products <-> payments apps
+        from apps.payments.serializers import sweep_closed_auctions_and_start_countdowns
+        sweep_closed_auctions_and_start_countdowns()
+
         return Product.objects.all()
 
 

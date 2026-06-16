@@ -134,8 +134,12 @@ REST_FRAMEWORK = {
         'rest_framework.filters.SearchFilter',
         'rest_framework.filters.OrderingFilter',
     ],
-    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
-    'PAGE_SIZE': 10,
+    # Pagination disabled: list endpoints (products, bids, payments,
+    # wallets, withdrawals, listing fees, pickup/delivery addresses, users)
+    # must return ALL matching records to the Seller/Buyer/Admin dashboards
+    # and the Browse Auctions page, not just the first 10. Existing
+    # filtering, search, and ordering (DEFAULT_FILTER_BACKENDS above) are
+    # untouched and continue to work exactly as before.
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
 }
 

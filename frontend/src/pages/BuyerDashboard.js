@@ -12,23 +12,25 @@ const getImageUrl = (img) => {
 
 // ─── Deadline Countdown ────────────────────────────────────────────────────
 const DeadlineCountdown = ({ deadline, compact = false }) => {
-  const [parts, setParts] = useState({ h: 0, m: 0, s: 0, passed: false });
+  const [parts, setParts] = useState({ d: 0, h: 0, m: 0, s: 0, passed: false });
 
   useEffect(() => {
     const calc = () => {
       const diff = new Date(deadline) - new Date();
-      if (diff <= 0) { setParts({ h: 0, m: 0, s: 0, passed: true }); return; }
-      const h = Math.floor(diff / 3600000);
+      if (diff <= 0) { setParts({ d: 0, h: 0, m: 0, s: 0, passed: true }); return; }
+      const totalHours = Math.floor(diff / 3600000);
+      const d = Math.floor(totalHours / 24);
+      const h = totalHours % 24;
       const m = Math.floor((diff % 3600000) / 60000);
       const s = Math.floor((diff % 60000) / 1000);
-      setParts({ h, m, s, passed: false });
+      setParts({ d, h, m, s, passed: false });
     };
     calc();
     const iv = setInterval(calc, 1000);
     return () => clearInterval(iv);
   }, [deadline]);
 
-  const urgent = !parts.passed && parts.h < 6;
+  const urgent = !parts.passed && parts.d === 0 && parts.h < 6;
 
   if (parts.passed) {
     return <span className="badge bg-danger fs-6"><i className="bi bi-clock me-1"></i>Deadline Passed</span>;
@@ -38,17 +40,18 @@ const DeadlineCountdown = ({ deadline, compact = false }) => {
     return (
       <span className={`badge ${urgent ? 'bg-danger' : 'bg-warning text-dark'} fs-6`}>
         <i className="bi bi-clock me-1"></i>
-        {parts.h}h {parts.m}m {parts.s}s
+        {parts.d > 0 && `${parts.d}d `}{parts.h}h {parts.m}m {parts.s}s
       </span>
     );
   }
 
-  // Full display: "23 Hours 45 Minutes 12 Seconds Remaining"
+  // Full display: "0 Days 23 Hours 45 Minutes 12 Seconds Remaining"
   return (
     <div className={`p-2 rounded-3 text-center ${urgent ? 'bg-danger text-white' : 'bg-warning'}`}>
       <div className="fw-bold" style={{ fontSize: '0.9rem' }}>
         <i className="bi bi-clock me-1"></i>
         <span style={{ fontVariantNumeric: 'tabular-nums' }}>
+          {String(parts.d).padStart(2,'0')} Days{' '}
           {String(parts.h).padStart(2,'0')} Hours{' '}
           {String(parts.m).padStart(2,'0')} Minutes{' '}
           {String(parts.s).padStart(2,'0')} Seconds Remaining

@@ -27,6 +27,7 @@ from .serializers import (
     DeliveryAddressSerializer,
     AdminDeliveryAddressSerializer,
     _expire_and_shift,
+    sweep_closed_auctions_and_start_countdowns,
 )
 from apps.users.permissions import IsBuyerRole, IsAdminRole, IsNotBlocked, IsSellerOrAdmin
 from apps.bids.models import Bid
@@ -428,6 +429,10 @@ class MyPaymentsView(generics.ListAPIView):
     permission_classes = [IsBuyerRole, IsNotBlocked]
 
     def get_queryset(self):
+        # Ensure any auction that has just closed already has its 24h
+        # winner payment countdown started, even if the buyer lands here
+        # without first browsing /api/products/ (Winner Payment Countdown fix).
+        sweep_closed_auctions_and_start_countdowns()
         return Payment.objects.filter(buyer=self.request.user)
 
 
@@ -437,6 +442,7 @@ class PaymentDetailView(generics.RetrieveAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
+        sweep_closed_auctions_and_start_countdowns()
         if self.request.user.role == 'ADMIN':
             return Payment.objects.all()
         return Payment.objects.filter(buyer=self.request.user)
@@ -446,9 +452,14 @@ class AdminPaymentListView(generics.ListAPIView):
     """GET /api/payments/admin/all/"""
     serializer_class   = PaymentDetailSerializer
     permission_classes = [IsAdminRole]
-    queryset           = Payment.objects.all()
     filterset_fields   = ['status', 'payment_method']
     search_fields      = ['buyer__username', 'transaction_id', 'product__title']
+
+    def get_queryset(self):
+        # Ensure admins see the countdown for every closed auction awaiting
+        # payment, even ones no buyer has opened yet (Winner Payment Countdown fix).
+        sweep_closed_auctions_and_start_countdowns()
+        return Payment.objects.all()
 
 
 # ─────────────────────────────────────────────────────────

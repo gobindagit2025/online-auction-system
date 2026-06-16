@@ -1,18 +1,6 @@
 {
     "cSpell.words": [
-        "bidzone",
-        "createsuperuser",
-        "filterset",
-        "gunicorn",
-        "LFREFUND",
-        "makemigrations",
         "nums",
-        "Paytm",
-        "runserver",
-        "txns",
-        "VARCHAR",
-        "venv",
-        "wsgi",
-        "XAMPP"
+        "txns"
     ]
 }

@@ -4,13 +4,15 @@ import { adminAPI, productAPI, bidAPI, paymentAPI, adminWalletAPI } from '../ser
 
 // ─── Admin Live Countdown ──────────────────────────────────────────────────
 const AdminCountdown = ({ deadline }) => {
-  const [parts, setParts] = React.useState({ h: 0, m: 0, s: 0, passed: false });
+  const [parts, setParts] = React.useState({ d: 0, h: 0, m: 0, s: 0, passed: false });
   React.useEffect(() => {
     const calc = () => {
       const diff = new Date(deadline) - new Date();
-      if (diff <= 0) { setParts({ h: 0, m: 0, s: 0, passed: true }); return; }
+      if (diff <= 0) { setParts({ d: 0, h: 0, m: 0, s: 0, passed: true }); return; }
+      const totalHours = Math.floor(diff / 3600000);
       setParts({
-        h: Math.floor(diff / 3600000),
+        d: Math.floor(totalHours / 24),
+        h: totalHours % 24,
         m: Math.floor((diff % 3600000) / 60000),
         s: Math.floor((diff % 60000) / 1000),
         passed: false,
@@ -21,10 +23,11 @@ const AdminCountdown = ({ deadline }) => {
     return () => clearInterval(iv);
   }, [deadline]);
   if (parts.passed) return <span className="badge bg-danger">Expired</span>;
-  const urgent = parts.h < 6;
+  const urgent = parts.d === 0 && parts.h < 6;
   return (
     <span className={`badge ${urgent ? 'bg-danger' : 'bg-warning text-dark'}`} style={{fontVariantNumeric:'tabular-nums'}}>
       <i className="bi bi-clock me-1"></i>
+      {parts.d > 0 && `${String(parts.d).padStart(2,'0')}d `}
       {String(parts.h).padStart(2,'0')}h {String(parts.m).padStart(2,'0')}m {String(parts.s).padStart(2,'0')}s
     </span>
   );
