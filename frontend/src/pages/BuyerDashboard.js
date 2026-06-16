@@ -11,29 +11,50 @@ const getImageUrl = (img) => {
 };
 
 // ─── Deadline Countdown ────────────────────────────────────────────────────
-const DeadlineCountdown = ({ deadline }) => {
-  const [text, setText] = useState('');
-  const [urgent, setUrgent] = useState(false);
+const DeadlineCountdown = ({ deadline, compact = false }) => {
+  const [parts, setParts] = useState({ h: 0, m: 0, s: 0, passed: false });
 
   useEffect(() => {
     const calc = () => {
       const diff = new Date(deadline) - new Date();
-      if (diff <= 0) { setText('Deadline Passed'); setUrgent(true); return; }
+      if (diff <= 0) { setParts({ h: 0, m: 0, s: 0, passed: true }); return; }
       const h = Math.floor(diff / 3600000);
       const m = Math.floor((diff % 3600000) / 60000);
       const s = Math.floor((diff % 60000) / 1000);
-      setUrgent(h < 6);
-      setText(`${h}h ${m}m ${s}s`);
+      setParts({ h, m, s, passed: false });
     };
     calc();
     const iv = setInterval(calc, 1000);
     return () => clearInterval(iv);
   }, [deadline]);
 
+  const urgent = !parts.passed && parts.h < 6;
+
+  if (parts.passed) {
+    return <span className="badge bg-danger fs-6"><i className="bi bi-clock me-1"></i>Deadline Passed</span>;
+  }
+
+  if (compact) {
+    return (
+      <span className={`badge ${urgent ? 'bg-danger' : 'bg-warning text-dark'} fs-6`}>
+        <i className="bi bi-clock me-1"></i>
+        {parts.h}h {parts.m}m {parts.s}s
+      </span>
+    );
+  }
+
+  // Full display: "23 Hours 45 Minutes 12 Seconds Remaining"
   return (
-    <span className={`badge ${urgent ? 'bg-danger' : 'bg-warning text-dark'} fs-6`}>
-      <i className="bi bi-clock me-1"></i>{text}
-    </span>
+    <div className={`p-2 rounded-3 text-center ${urgent ? 'bg-danger text-white' : 'bg-warning'}`}>
+      <div className="fw-bold" style={{ fontSize: '0.9rem' }}>
+        <i className="bi bi-clock me-1"></i>
+        <span style={{ fontVariantNumeric: 'tabular-nums' }}>
+          {String(parts.h).padStart(2,'0')} Hours{' '}
+          {String(parts.m).padStart(2,'0')} Minutes{' '}
+          {String(parts.s).padStart(2,'0')} Seconds Remaining
+        </span>
+      </div>
+    </div>
   );
 };
 
@@ -391,56 +412,93 @@ const BuyerDashboard = () => {
 
                 {/* Won Auctions */}
                 {activeTab === 'won' && (
-                  <div className="table-responsive">
-                    <table className="table table-hover mb-0">
-                      <thead className="table-light">
-                        <tr><th>Image</th><th>Product</th><th>Winning Bid</th><th>Payment Deadline</th><th>Status</th><th>Action</th></tr>
-                      </thead>
-                      <tbody>
-                        {winningBids.length === 0 ? (
-                          <tr><td colSpan="6" className="text-center py-4 text-muted">No auctions won yet.</td></tr>
-                        ) : winningBids.map(bid => {
+                  <div>
+                    {winningBids.length === 0 ? (
+                      <div className="text-center py-5 text-muted">
+                        <i className="bi bi-trophy fs-1"></i>
+                        <div className="mt-2">No auctions won yet.</div>
+                      </div>
+                    ) : (
+                      <div className="p-3 d-flex flex-column gap-3">
+                        {winningBids.map(bid => {
                           const isPaid = paidProductIds.includes(bid.product);
-                          const deadline = getDeadlineForBid(bid);
+                          const pendingPay = pendingPayments.find(p => p.product === bid.product);
+                          const deadline = pendingPay?.payment_deadline || getDeadlineForBid(bid);
+                          const auctionEndTime = pendingPay?.auction_end_time;
+
                           return (
-                            <tr key={bid.id}>
-                              <td>
-                                <img src={getImageUrl(bid.product_image)} alt={bid.product_title}
-                                  width="56" height="56" style={{ borderRadius: '8px', objectFit: 'cover', border: '1px solid #e0e0e0' }} />
-                              </td>
-                              <td className="fw-semibold align-middle">{bid.product_title}</td>
-                              <td className="fw-bold align-middle text-success">₹{parseFloat(bid.amount).toLocaleString()}</td>
-                              <td className="align-middle">
-                                {isPaid
-                                  ? <span className="badge bg-success">Paid ✓</span>
-                                  : deadline
-                                  ? <DeadlineCountdown deadline={deadline} />
-                                  : <span className="badge bg-warning text-dark">Pay within 24h</span>}
-                              </td>
-                              <td className="align-middle">
-                                {isPaid
-                                  ? <span className="badge bg-success">Completed</span>
-                                  : <span className="badge bg-danger">Unpaid</span>}
-                              </td>
-                              <td className="align-middle">
-                                {!isPaid && (
-                                  <button className="btn btn-sm fw-semibold"
-                                    style={{ backgroundColor: '#e94560', color: 'white' }}
-                                    onClick={() => setPayingBid(bid)}>
-                                    <i className="bi bi-credit-card me-1"></i>Pay Now
-                                  </button>
-                                )}
-                                {isPaid && <span className="text-success fw-bold">✓ Done</span>}
-                              </td>
-                            </tr>
+                            <div key={bid.id} className="card border-0 shadow-sm" style={{ borderRadius: 14 }}>
+                              <div className="card-body p-3">
+                                <div className="d-flex gap-3 align-items-start">
+                                  <img src={getImageUrl(bid.product_image)} alt={bid.product_title}
+                                    width="72" height="72" style={{ borderRadius: 10, objectFit: 'cover', border: '2px solid #e94560', flexShrink: 0 }} />
+                                  <div className="flex-grow-1 min-w-0">
+                                    {/* Title + status */}
+                                    <div className="d-flex justify-content-between align-items-start flex-wrap gap-1 mb-2">
+                                      <h6 className="fw-bold mb-0">{bid.product_title}</h6>
+                                      {isPaid
+                                        ? <span className="badge bg-success">✓ Paid</span>
+                                        : <span className="badge bg-danger">Payment Pending</span>}
+                                    </div>
+
+                                    {/* Key info grid */}
+                                    <div className="row g-2 mb-2" style={{ fontSize: '0.82rem' }}>
+                                      <div className="col-6 col-md-3">
+                                        <div className="text-muted">Winning Amount</div>
+                                        <div className="fw-bold text-success fs-6">₹{parseFloat(bid.amount).toLocaleString()}</div>
+                                      </div>
+                                      {auctionEndTime && (
+                                        <div className="col-6 col-md-3">
+                                          <div className="text-muted">Auction Ended</div>
+                                          <div className="fw-semibold">{new Date(auctionEndTime).toLocaleString()}</div>
+                                        </div>
+                                      )}
+                                      {deadline && !isPaid && (
+                                        <div className="col-6 col-md-3">
+                                          <div className="text-muted">Payment Deadline</div>
+                                          <div className="fw-semibold text-danger">{new Date(deadline).toLocaleString()}</div>
+                                        </div>
+                                      )}
+                                      {isPaid && pendingPay?.paid_at && (
+                                        <div className="col-6 col-md-3">
+                                          <div className="text-muted">Paid At</div>
+                                          <div className="fw-semibold text-success">{new Date(pendingPay.paid_at).toLocaleString()}</div>
+                                        </div>
+                                      )}
+                                    </div>
+
+                                    {/* Live countdown */}
+                                    {!isPaid && deadline && (
+                                      <div className="mb-2">
+                                        <DeadlineCountdown deadline={deadline} compact={false} />
+                                      </div>
+                                    )}
+
+                                    {/* Action */}
+                                    {!isPaid ? (
+                                      <button className="btn btn-sm fw-bold px-3"
+                                        style={{ backgroundColor: '#e94560', color: 'white', borderRadius: 8 }}
+                                        onClick={() => setPayingBid(bid)}>
+                                        <i className="bi bi-credit-card me-1"></i>Pay Now
+                                      </button>
+                                    ) : (
+                                      <Link to={`/products/${bid.product}`} className="btn btn-sm btn-outline-success">
+                                        <i className="bi bi-eye me-1"></i>View Order
+                                      </Link>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
                           );
                         })}
-                      </tbody>
-                    </table>
-                    {winningBids.some(b => !paidProductIds.includes(b.product)) && (
-                      <div className="alert alert-danger mx-3 my-3 py-2 small">
-                        <i className="bi bi-exclamation-triangle me-2"></i>
-                        <strong>Important:</strong> Pay within 24 hours of auction close. Failure will shift the win to the next highest bidder!
+
+                        {winningBids.some(b => !paidProductIds.includes(b.product)) && (
+                          <div className="alert alert-danger py-2 small">
+                            <i className="bi bi-exclamation-triangle me-2"></i>
+                            <strong>Important:</strong> Pay within 24 hours of auction close. Failure will automatically shift the win to the next highest bidder!
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>

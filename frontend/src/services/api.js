@@ -84,6 +84,7 @@ export const productAPI = {
   // Seller Pickup Address (Feature: Seller Pickup Address Collection)
   getPickupAddress: (id) => api.get(`/products/${id}/pickup-address/`),
   savePickupAddress: (id, data) => api.post(`/products/${id}/pickup-address/`, data),
+  updatePickupAddress: (id, data) => api.patch(`/products/${id}/pickup-address/`, data),
   adminPickupAddresses: () => api.get('/products/admin/pickup-addresses/'),
 };
 
@@ -128,6 +129,7 @@ export const walletAPI = {
   requestWithdrawal: (data) => api.post('/payments/withdraw/', data),
   myWithdrawals: () => api.get('/payments/my-withdrawals/'),
   checkDeadline: (productId) => api.post(`/payments/check-deadline/${productId}/`),
+  winnerCountdown: (productId) => api.get(`/payments/winner-countdown/${productId}/`),
 };
 
 // ===================== ADMIN WALLET & WITHDRAWAL =====================

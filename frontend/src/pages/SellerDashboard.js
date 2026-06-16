@@ -1,7 +1,8 @@
 // src/pages/SellerDashboard.js
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { productAPI, walletAPI } from '../services/api';
+import AddressForm from '../components/AddressForm';
 
 const API_BASE = 'http://localhost:8000';
 const getImageUrl = (img, placeholder = 'https://via.placeholder.com/60?text=No+Image') => {
@@ -408,6 +409,166 @@ const AddProductModal = ({ onSuccess }) => {
   );
 };
 
+// ─── Pickup Address Modal (Post-Creation) ────────────────────────────────
+// Allows sellers to Add or Edit their pickup address after listing creation.
+// Shows a 1-hour reverse countdown from listing creation time for edits.
+const PickupAddressModal = ({ product, onClose, onSaved }) => {
+  const [initialValues, setInitialValues] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState(false);
+  const [hasAddress, setHasAddress] = useState(false);
+  const [timeLeft, setTimeLeft] = useState(null);
+  const timerRef = useRef(null);
+
+  // Compute seconds remaining within the 1-hour edit window from listing creation
+  const computeTimeLeft = useCallback(() => {
+    const createdAt = new Date(product.created_at).getTime();
+    const deadline = createdAt + 60 * 60 * 1000; // +1 hour
+    const now = Date.now();
+    return Math.max(0, Math.floor((deadline - now) / 1000));
+  }, [product.created_at]);
+
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const addrRes = await productAPI.getPickupAddress(product.id);
+        setInitialValues(addrRes.data);
+        setHasAddress(true);
+      } catch {
+        setInitialValues({});
+        setHasAddress(false);
+      }
+      setLoading(false);
+    };
+    load();
+  }, [product.id]);
+
+  // Start countdown only when editing (address already exists)
+  useEffect(() => {
+    if (!hasAddress) return;
+    setTimeLeft(computeTimeLeft());
+    timerRef.current = setInterval(() => {
+      const secs = computeTimeLeft();
+      setTimeLeft(secs);
+      if (secs <= 0) clearInterval(timerRef.current);
+    }, 1000);
+    return () => clearInterval(timerRef.current);
+  }, [hasAddress, computeTimeLeft]);
+
+  const formatCountdown = (secs) => {
+    if (secs === null) return '';
+    const m = String(Math.floor(secs / 60)).padStart(2, '0');
+    const s = String(secs % 60).padStart(2, '0');
+    return `${m}:${s}`;
+  };
+
+  const isExpired = hasAddress && timeLeft !== null && timeLeft <= 0;
+
+  const handleSubmit = async (values) => {
+    setSaving(true);
+    setError('');
+    try {
+      // Use PATCH when updating an existing address, POST when creating
+      if (hasAddress) {
+        await productAPI.updatePickupAddress(product.id, values);
+      } else {
+        await productAPI.savePickupAddress(product.id, values);
+      }
+      setSuccess(true);
+      onSaved();
+      setTimeout(() => onClose(), 1800);
+    } catch (err) {
+      const data = err.response?.data;
+      setError(typeof data === 'object' ? Object.values(data).flat().join(' ') : 'Failed to save pickup address.');
+    }
+    setSaving(false);
+  };
+
+  return (
+    <div className="modal show d-block" tabIndex="-1" style={{ background: 'rgba(0,0,0,0.55)', zIndex: 9999 }}>
+      <div className="modal-dialog modal-dialog-centered modal-lg">
+        <div className="modal-content border-0 shadow-lg" style={{ borderRadius: 16 }}>
+          {/* Header */}
+          <div className="modal-header text-white border-0"
+            style={{ background: 'linear-gradient(135deg,#1a1a2e,#0f3460)', borderRadius: '16px 16px 0 0' }}>
+            <div>
+              <h5 className="modal-title fw-bold mb-0">
+                <i className="bi bi-geo-alt-fill me-2" style={{ color: '#e94560' }}></i>
+                {hasAddress ? 'Edit Pickup Address' : 'Add Pickup Address'}
+              </h5>
+              <small className="opacity-75">{product.title}</small>
+            </div>
+            <div className="d-flex align-items-center gap-3">
+              {/* Countdown badge — only shown when editing within 1h window */}
+              {hasAddress && timeLeft !== null && (
+                <div className={`badge fs-6 px-3 py-2 ${isExpired ? 'bg-danger' : timeLeft < 300 ? 'bg-warning text-dark' : 'bg-success'}`}
+                  title="Time remaining to edit pickup address">
+                  <i className="bi bi-clock me-1"></i>
+                  {isExpired ? 'Window Closed' : formatCountdown(timeLeft)}
+                </div>
+              )}
+              <button type="button" className="btn-close btn-close-white" onClick={onClose} />
+            </div>
+          </div>
+
+          <div className="modal-body p-4">
+            {loading ? (
+              <div className="text-center py-5">
+                <div className="spinner-border" style={{ color: '#e94560' }}></div>
+              </div>
+            ) : success ? (
+              <div className="text-center py-5">
+                <div style={{ width: 64, height: 64, borderRadius: '50%', background: '#28a745', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px' }}>
+                  <i className="bi bi-check-lg text-white fs-2"></i>
+                </div>
+                <h5 className="fw-bold text-success">Pickup Address Saved!</h5>
+                <p className="text-muted small">Closing automatically…</p>
+              </div>
+            ) : isExpired ? (
+              <div className="alert alert-danger text-center py-4">
+                <i className="bi bi-clock-history fs-2 d-block mb-2"></i>
+                <h6 className="fw-bold">Edit Window Expired</h6>
+                <p className="mb-0 small">The 1-hour edit window from listing creation has passed. Contact support if you need to update this address.</p>
+              </div>
+            ) : (
+              <>
+                {/* Info banner */}
+                {hasAddress ? (
+                  <div className="alert alert-warning py-2 mb-3 d-flex align-items-center gap-2 small">
+                    <i className="bi bi-exclamation-triangle-fill"></i>
+                    <span>
+                      You can edit this pickup address within <strong>1 hour</strong> of listing creation.
+                      {timeLeft !== null && timeLeft > 0 && (
+                        <> Time remaining: <strong>{formatCountdown(timeLeft)}</strong></>
+                      )}
+                    </span>
+                  </div>
+                ) : (
+                  <div className="alert alert-info py-2 mb-3 d-flex align-items-center gap-2 small">
+                    <i className="bi bi-info-circle-fill"></i>
+                    <span>Add the pickup address for this listing. Buyers will use this to arrange collection of the item.</span>
+                  </div>
+                )}
+
+                {error && <div className="alert alert-danger py-2 small">{error}</div>}
+
+                <AddressForm
+                  initialValues={initialValues}
+                  onSubmit={handleSubmit}
+                  loading={saving}
+                  submitLabel={hasAddress ? 'Update Pickup Address' : 'Save Pickup Address'}
+                />
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // ─── Add More Images Modal (Seller) ───────────────────────────────────────
 const AddImagesModal = ({ product, onClose, onUploaded }) => {
   const [images, setImages] = useState([]);
@@ -525,6 +686,14 @@ const SellerDashboard = () => {
   const [wallet, setWallet] = useState(null);
   const [loading, setLoading] = useState(true);
   const [imageModalProduct, setImageModalProduct] = useState(null);
+  const [addressModalProduct, setAddressModalProduct] = useState(null);
+  const [productAddresses, setProductAddresses] = useState({}); // { productId: addressObj|null }
+  const [, setTick] = useState(0); // forces re-render every second for live countdowns
+
+  useEffect(() => {
+    const id = setInterval(() => setTick(t => t + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
 
   const fetchProducts = async () => {
     setLoading(true);
@@ -533,8 +702,23 @@ const SellerDashboard = () => {
         productAPI.myProducts(),
         walletAPI.myWallet(),
       ]);
-      setProducts(pRes.data.results || pRes.data);
+      const prods = pRes.data.results || pRes.data;
+      setProducts(prods);
       setWallet(wRes.data);
+
+      // Fetch pickup address status for each product (parallel, ignore errors)
+      const addressMap = {};
+      await Promise.allSettled(
+        prods.map(async (p) => {
+          try {
+            const res = await productAPI.getPickupAddress(p.id);
+            addressMap[p.id] = res.data;
+          } catch {
+            addressMap[p.id] = null; // no address yet
+          }
+        })
+      );
+      setProductAddresses(addressMap);
     } catch { }
     setLoading(false);
   };
@@ -638,6 +822,7 @@ const SellerDashboard = () => {
                       <th>Current Bid</th>
                       <th>End Time</th>
                       <th>Status</th>
+                      <th>Pickup Address</th>
                       <th>Action</th>
                     </tr>
                   </thead>
@@ -663,6 +848,46 @@ const SellerDashboard = () => {
                         </td>
                         <td><small>{new Date(p.auction_end_time).toLocaleString()}</small></td>
                         <td><StatusBadge status={p.status} /></td>
+                        <td>
+                          {(() => {
+                            const addr = productAddresses[p.id];
+                            const hasAddr = addr !== null && addr !== undefined;
+                            const listingFeePaid = true; // fetching only seller's own products; fee status tracked server-side
+                            const createdAt = new Date(p.created_at).getTime();
+                            const editDeadline = createdAt + 60 * 60 * 1000;
+                            const withinWindow = Date.now() < editDeadline;
+                            const secsLeft = Math.max(0, Math.floor((editDeadline - Date.now()) / 1000));
+                            const mmss = `${String(Math.floor(secsLeft / 60)).padStart(2,'0')}:${String(secsLeft % 60).padStart(2,'0')}`;
+
+                            if (!hasAddr) {
+                              return (
+                                <button
+                                  className="btn btn-sm btn-outline-success"
+                                  title="Add pickup address for this listing"
+                                  onClick={() => setAddressModalProduct(p)}>
+                                  <i className="bi bi-geo-alt me-1"></i>Add Address
+                                </button>
+                              );
+                            }
+                            if (withinWindow) {
+                              return (
+                                <button
+                                  className="btn btn-sm btn-outline-warning"
+                                  title={`Edit pickup address — ${mmss} remaining`}
+                                  onClick={() => setAddressModalProduct(p)}>
+                                  <i className="bi bi-pencil me-1"></i>
+                                  Edit Address
+                                  <span className="badge bg-warning text-dark ms-1" style={{fontSize:'0.65rem'}}>{mmss}</span>
+                                </button>
+                              );
+                            }
+                            return (
+                              <span className="badge bg-success text-white" title="Pickup address saved">
+                                <i className="bi bi-geo-alt-fill me-1"></i>Address Set
+                              </span>
+                            );
+                          })()}
+                        </td>
                         <td>
                           <Link to={`/products/${p.id}`} className="btn btn-sm btn-outline-primary me-1">
                             <i className="bi bi-eye"></i>
@@ -711,6 +936,14 @@ const SellerDashboard = () => {
           product={imageModalProduct}
           onClose={() => setImageModalProduct(null)}
           onUploaded={fetchProducts}
+        />
+      )}
+
+      {addressModalProduct && (
+        <PickupAddressModal
+          product={addressModalProduct}
+          onClose={() => setAddressModalProduct(null)}
+          onSaved={fetchProducts}
         />
       )}
     </div>

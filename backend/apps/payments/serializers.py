@@ -112,22 +112,66 @@ class ListingFeeSerializer(serializers.ModelSerializer):
 # ─────────────────────────────────────────────────────────
 
 def _expire_and_shift(product, payment=None):
-    """Mark current winning bid as non-winning, shift to next highest bidder."""
-    current_winner_bid = Bid.objects.filter(product=product, is_winning_bid=True).first()
-    if current_winner_bid:
+    """
+    Mark current winning bid/payment as expired, shift win to next highest bidder.
+    Creates a fresh PENDING Payment record for the next bidder with a new 24h countdown.
+    If no bidders remain, marks product as unsold (status stays CLOSED, no new payment).
+    """
+    from django.db import transaction as db_transaction
+
+    with db_transaction.atomic():
+        # Expire current payment
+        if payment:
+            payment.status = Payment.Status.EXPIRED
+            payment.save(update_fields=['status'])
+
+        # Disqualify current winner bid
+        current_winner_bid = Bid.objects.filter(product=product, is_winning_bid=True).first()
+        if not current_winner_bid:
+            return  # Nothing to shift
+
+        disqualified_bidder = current_winner_bid.bidder
         current_winner_bid.is_winning_bid = False
         current_winner_bid.save(update_fields=['is_winning_bid'])
+
+        # Find next highest bidder (exclude all bidders who already have an EXPIRED payment)
+        expired_bidder_ids = Payment.objects.filter(
+            product=product, status=Payment.Status.EXPIRED
+        ).values_list('buyer_id', flat=True)
+
         next_bid = Bid.objects.filter(
-            product=product, is_winning_bid=False
-        ).exclude(bidder=current_winner_bid.bidder).order_by('-amount').first()
+            product=product,
+            is_winning_bid=False,
+        ).exclude(
+            bidder_id__in=expired_bidder_ids
+        ).exclude(
+            bidder=disqualified_bidder
+        ).order_by('-amount').first()
+
         if next_bid:
+            # Promote next bidder to winner
             next_bid.is_winning_bid = True
             next_bid.save(update_fields=['is_winning_bid'])
             product.current_highest_bid = next_bid.amount
             product.save(update_fields=['current_highest_bid'])
-    if payment:
-        payment.status = Payment.Status.EXPIRED
-        payment.save(update_fields=['status'])
+
+            # Create a fresh 24-hour Payment record for next winner
+            now = timezone.now()
+            Payment.objects.create(
+                buyer            = next_bid.bidder,
+                product          = product,
+                winning_bid      = next_bid,
+                amount           = next_bid.amount,
+                status           = Payment.Status.PENDING,
+                transaction_id   = f"TXN-SHIFT-{uuid.uuid4().hex[:10].upper()}",
+                countdown_start  = now,
+                payment_deadline = now + timezone.timedelta(hours=24),
+            )
+        else:
+            # No more valid bidders — auction is truly unsold
+            # Leave product as CLOSED with no active winner
+            product.current_highest_bid = None
+            product.save(update_fields=['current_highest_bid'])
 
 
 class InitiatePaymentSerializer(serializers.Serializer):
@@ -183,6 +227,21 @@ class InitiatePaymentSerializer(serializers.Serializer):
         buyer       = self.context['request'].user
         product     = validated_data['product']
         winning_bid = validated_data['winning_bid']
+        now         = timezone.now()
+
+        # Re-use existing PENDING payment if already created (e.g. page refresh)
+        existing = Payment.objects.filter(
+            product=product, buyer=buyer, status=Payment.Status.PENDING
+        ).first()
+        if existing:
+            # Update payment method details on re-initiation
+            existing.payment_method = validated_data['payment_method']
+            existing.upi_id         = validated_data.get('upi_id', '')
+            existing.card_last4     = validated_data.get('card_last4', '')
+            if validated_data['payment_method'] == 'QR_CODE' and not existing.qr_ref:
+                existing.qr_ref = f"QR-{uuid.uuid4().hex[:16].upper()}"
+            existing.save()
+            return existing
 
         payment = Payment.objects.create(
             buyer            = buyer,
@@ -194,6 +253,7 @@ class InitiatePaymentSerializer(serializers.Serializer):
             card_last4       = validated_data.get('card_last4', ''),
             status           = Payment.Status.PENDING,
             transaction_id   = f"TXN-{uuid.uuid4().hex[:12].upper()}",
+            countdown_start  = product.auction_end_time,  # countdown begins at auction close
             payment_deadline = validated_data['deadline'],
         )
         if validated_data['payment_method'] == 'QR_CODE':
@@ -224,7 +284,9 @@ class CompletePaymentSerializer(serializers.Serializer):
 class PaymentDetailSerializer(serializers.ModelSerializer):
     buyer_name         = serializers.CharField(source='buyer.username', read_only=True)
     product_title      = serializers.CharField(source='product.title', read_only=True)
+    auction_end_time   = serializers.DateTimeField(source='product.auction_end_time', read_only=True)
     deadline_remaining = serializers.SerializerMethodField()
+    deadline_seconds   = serializers.SerializerMethodField()
 
     class Meta:
         model  = Payment
@@ -232,7 +294,9 @@ class PaymentDetailSerializer(serializers.ModelSerializer):
             'id', 'buyer_name', 'product_title', 'amount',
             'status', 'payment_method', 'transaction_id',
             'upi_id', 'card_last4', 'qr_ref',
-            'payment_deadline', 'deadline_remaining',
+            'countdown_start', 'payment_deadline',
+            'auction_end_time',
+            'deadline_remaining', 'deadline_seconds',
             'created_at', 'paid_at',
             'buyer', 'product', 'winning_bid'
         ]
@@ -240,11 +304,19 @@ class PaymentDetailSerializer(serializers.ModelSerializer):
     def get_deadline_remaining(self, obj):
         if obj.payment_deadline and obj.status == Payment.Status.PENDING:
             remaining = obj.payment_deadline - timezone.now()
-            if remaining.total_seconds() > 0:
-                hours, rem = divmod(int(remaining.total_seconds()), 3600)
-                minutes    = rem // 60
-                return f"{hours}h {minutes}m remaining"
-            return "Deadline passed"
+            total = int(remaining.total_seconds())
+            if total > 0:
+                hours, rem = divmod(total, 3600)
+                minutes, secs = divmod(rem, 60)
+                return f"{hours} Hours {minutes} Minutes {secs} Seconds Remaining"
+            return "Deadline Passed"
+        return None
+
+    def get_deadline_seconds(self, obj):
+        """Total seconds remaining — used by frontend countdown timer."""
+        if obj.payment_deadline and obj.status == Payment.Status.PENDING:
+            remaining = obj.payment_deadline - timezone.now()
+            return max(0, int(remaining.total_seconds()))
         return None
 
 

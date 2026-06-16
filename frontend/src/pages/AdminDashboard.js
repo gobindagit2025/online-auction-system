@@ -2,6 +2,34 @@
 import React, { useState, useEffect } from 'react';
 import { adminAPI, productAPI, bidAPI, paymentAPI, adminWalletAPI } from '../services/api';
 
+// ─── Admin Live Countdown ──────────────────────────────────────────────────
+const AdminCountdown = ({ deadline }) => {
+  const [parts, setParts] = React.useState({ h: 0, m: 0, s: 0, passed: false });
+  React.useEffect(() => {
+    const calc = () => {
+      const diff = new Date(deadline) - new Date();
+      if (diff <= 0) { setParts({ h: 0, m: 0, s: 0, passed: true }); return; }
+      setParts({
+        h: Math.floor(diff / 3600000),
+        m: Math.floor((diff % 3600000) / 60000),
+        s: Math.floor((diff % 60000) / 1000),
+        passed: false,
+      });
+    };
+    calc();
+    const iv = setInterval(calc, 1000);
+    return () => clearInterval(iv);
+  }, [deadline]);
+  if (parts.passed) return <span className="badge bg-danger">Expired</span>;
+  const urgent = parts.h < 6;
+  return (
+    <span className={`badge ${urgent ? 'bg-danger' : 'bg-warning text-dark'}`} style={{fontVariantNumeric:'tabular-nums'}}>
+      <i className="bi bi-clock me-1"></i>
+      {String(parts.h).padStart(2,'0')}h {String(parts.m).padStart(2,'0')}m {String(parts.s).padStart(2,'0')}s
+    </span>
+  );
+};
+
 const AdminDashboard = () => {
   const [users, setUsers] = useState([]);
   const [products, setProducts] = useState([]);
@@ -16,6 +44,8 @@ const AdminDashboard = () => {
   const [activeTab, setActiveTab] = useState('overview');
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState({ type: '', text: '' });
+  const [refundModal, setRefundModal] = useState({ open: false, lf: null });
+  const [refundReason, setRefundReason] = useState('');
 
   const fetchAll = async () => {
     setLoading(true);
@@ -81,14 +111,41 @@ const AdminDashboard = () => {
     } catch { showMsg('danger', 'Failed to process withdrawal.'); }
   };
 
-  const handleRefundListingFee = async (productId) => {
+  const openRefundModal = (lf) => {
+    setRefundModal({ open: true, lf });
+    setRefundReason('Admin manually cancelled the listing before any bids were placed.');
+  };
+
+  const closeRefundModal = () => {
+    setRefundModal({ open: false, lf: null });
+    setRefundReason('');
+  };
+
+  const handleRefundListingFee = async () => {
+    const { lf } = refundModal;
+    if (!lf) return;
+    const product = products.find(p => p.title === lf.product_title);
+    if (!product) {
+      showMsg('danger', 'Could not resolve product — ensure the product is CANCELLED with no bids.');
+      closeRefundModal();
+      return;
+    }
     try {
-      const res = await adminWalletAPI.refundListingFee(productId);
-      showMsg('success', res.data.message);
+      const res = await adminWalletAPI.refundListingFee(product.id, { reason: refundReason });
+      const rd = res.data.refund_details;
+      const msg = [
+        res.data.message,
+        rd?.company_wallet_balance_before !== undefined
+          ? `Company wallet: ₹${parseFloat(rd.company_wallet_balance_before).toLocaleString()} → ₹${parseFloat(rd.company_wallet_balance_after).toLocaleString()}`
+          : ''
+      ].filter(Boolean).join(' | ');
+      showMsg('success', msg);
+      closeRefundModal();
       fetchAll();
     } catch (err) {
       const d = err.response?.data;
       showMsg('danger', d?.error || 'Failed to process refund.');
+      closeRefundModal();
     }
   };
 
@@ -119,6 +176,7 @@ const AdminDashboard = () => {
   ];
 
   return (
+    <>
     <div className="min-vh-100" style={{ background: '#f0f2f5' }}>
       <div className="py-4 text-white" style={{ background: 'linear-gradient(135deg, #1a1a2e, #0f3460)' }}>
         <div className="container">
@@ -320,25 +378,55 @@ const AdminDashboard = () => {
                   <div className="table-responsive">
                     <table className="table table-hover mb-0">
                       <thead className="table-light">
-                        <tr><th>Txn ID</th><th>Buyer</th><th>Product</th><th>Amount</th><th>Method</th><th>Deadline</th><th>Status</th></tr>
+                        <tr>
+                          <th>Txn ID</th>
+                          <th>Buyer</th>
+                          <th>Product</th>
+                          <th>Amount</th>
+                          <th>Method</th>
+                          <th>Auction Ended</th>
+                          <th>Countdown Started</th>
+                          <th>Payment Deadline</th>
+                          <th>Live Countdown</th>
+                          <th>Status</th>
+                        </tr>
                       </thead>
                       <tbody>
                         {payments.length === 0
-                          ? <tr><td colSpan="7" className="text-center py-4 text-muted">No payments yet.</td></tr>
+                          ? <tr><td colSpan="10" className="text-center py-4 text-muted">No payments yet.</td></tr>
                           : payments.map(pay => (
                             <tr key={pay.id}>
                               <td><code className="small">{pay.transaction_id}</code></td>
-                              <td>{pay.buyer_name}</td>
+                              <td className="fw-semibold">{pay.buyer_name}</td>
                               <td>{pay.product_title}</td>
                               <td className="fw-bold">₹{parseFloat(pay.amount).toLocaleString()}</td>
-                              <td><span className="badge bg-light text-dark">{pay.payment_method}</span></td>
+                              <td><span className="badge bg-light text-dark">{pay.payment_method || '-'}</span></td>
                               <td>
-                                {pay.payment_deadline
-                                  ? <small className="text-muted">{new Date(pay.payment_deadline).toLocaleString()}</small>
-                                  : '-'}
+                                {pay.auction_end_time
+                                  ? <small>{new Date(pay.auction_end_time).toLocaleString()}</small>
+                                  : <small className="text-muted">-</small>}
                               </td>
                               <td>
-                                <span className={`badge bg-${pay.status === 'COMPLETED' ? 'success' : pay.status === 'PENDING' ? 'warning' : pay.status === 'EXPIRED' ? 'danger' : 'secondary'}`}>
+                                {pay.countdown_start
+                                  ? <small>{new Date(pay.countdown_start).toLocaleString()}</small>
+                                  : <small className="text-muted">-</small>}
+                              </td>
+                              <td>
+                                {pay.payment_deadline
+                                  ? <small className={pay.status === 'PENDING' ? 'text-danger fw-semibold' : 'text-muted'}>{new Date(pay.payment_deadline).toLocaleString()}</small>
+                                  : <small className="text-muted">-</small>}
+                              </td>
+                              <td>
+                                {pay.status === 'PENDING' && pay.payment_deadline
+                                  ? <AdminCountdown deadline={pay.payment_deadline} />
+                                  : pay.status === 'COMPLETED'
+                                  ? <span className="badge bg-success">Paid ✓</span>
+                                  : pay.status === 'EXPIRED'
+                                  ? <span className="badge bg-danger">Expired</span>
+                                  : <span className="text-muted small">-</span>}
+                              </td>
+                              <td>
+                                <span className={`badge bg-${pay.status === 'COMPLETED' ? 'success' : pay.status === 'PENDING' ? 'warning text-dark' : pay.status === 'EXPIRED' ? 'danger' : 'secondary'}`}>
                                   {pay.status}
                                 </span>
                               </td>
@@ -433,41 +521,100 @@ const AdminDashboard = () => {
                   <div className="table-responsive">
                     <table className="table table-hover mb-0">
                       <thead className="table-light">
-                        <tr><th>Seller</th><th>Product</th><th>Fee (5%)</th><th>Method</th><th>Paid At</th><th>Status</th><th>Refund Action</th></tr>
+                        <tr>
+                          <th>Seller</th>
+                          <th>Product</th>
+                          <th>Fee (5%)</th>
+                          <th>Method</th>
+                          <th>Paid At</th>
+                          <th>Status</th>
+                          <th>Refund History</th>
+                          <th>Action</th>
+                        </tr>
                       </thead>
                       <tbody>
                         {listingFees.length === 0
-                          ? <tr><td colSpan="7" className="text-center py-4 text-muted">No listing fees recorded.</td></tr>
-                          : listingFees.map(lf => (
-                            <tr key={lf.id}>
-                              <td className="fw-semibold">{lf.seller_name}</td>
-                              <td>{lf.product_title}</td>
-                              <td className="fw-bold" style={{ color: '#e94560' }}>₹{parseFloat(lf.fee_amount).toLocaleString()}</td>
-                              <td><span className="badge bg-light text-dark">{lf.payment_method || '-'}</span></td>
-                              <td><small>{lf.paid_at ? new Date(lf.paid_at).toLocaleString() : '-'}</small></td>
-                              <td>
-                                <span className={`badge bg-${lf.status === 'PAID' ? 'success' : lf.status === 'REFUNDED' ? 'info' : 'warning text-dark'}`}>
-                                  {lf.status}
-                                  {lf.status === 'REFUNDED' && lf.refund_amount && ` (₹${parseFloat(lf.refund_amount).toLocaleString()} back)`}
-                                </span>
-                              </td>
-                              <td>
-                                {lf.status === 'PAID' && (
-                                  <button className="btn btn-sm btn-outline-info"
-                                    onClick={() => {
-                                      const pId = products.find(p => p.title === lf.product_title)?.id;
-                                      if (pId) handleRefundListingFee(pId);
-                                      else showMsg('danger', 'Could not find product. Check product status (must be CLOSED & unsold).');
-                                    }}>
-                                    Refund 2.5%
-                                  </button>
-                                )}
-                                {lf.status === 'REFUNDED' && (
-                                  <span className="text-success small">✓ Refunded ₹{parseFloat(lf.refund_amount || 0).toLocaleString()}</span>
-                                )}
-                              </td>
-                            </tr>
-                          ))}
+                          ? <tr><td colSpan="8" className="text-center py-4 text-muted">No listing fees recorded.</td></tr>
+                          : listingFees.map(lf => {
+                            const product = products.find(p => p.title === lf.product_title);
+                            const isCancelled = product?.status === 'CANCELLED';
+                            const hasBids = product?.current_highest_bid != null;
+                            const canRefund = lf.status === 'PAID' && isCancelled && !hasBids;
+                            let ineligibleReason = '';
+                            if (lf.status === 'PAID') {
+                              if (!product) ineligibleReason = 'Product not found';
+                              else if (product.status === 'PENDING') ineligibleReason = 'Not eligible: auction is Pending';
+                              else if (product.status === 'CLOSED') ineligibleReason = 'Not eligible: auction closed normally';
+                              else if (product.status === 'ACTIVE') ineligibleReason = 'Not eligible: auction is Active — cancel it first';
+                              else if (!isCancelled) ineligibleReason = 'Not eligible: product must be Cancelled';
+                              else if (hasBids) ineligibleReason = 'Not eligible: product has received bids';
+                            }
+                            return (
+                              <tr key={lf.id}>
+                                <td className="fw-semibold">{lf.seller_name}</td>
+                                <td>
+                                  {lf.product_title}
+                                  {product && (
+                                    <span
+                                      className={`ms-1 badge bg-${product.status === 'CANCELLED' ? 'secondary' : product.status === 'ACTIVE' ? 'success' : product.status === 'CLOSED' ? 'dark' : 'warning text-dark'}`}
+                                      style={{fontSize:'0.65rem'}}>
+                                      {product.status}
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="fw-bold" style={{ color: '#e94560' }}>₹{parseFloat(lf.fee_amount).toLocaleString()}</td>
+                                <td><span className="badge bg-light text-dark">{lf.payment_method || '-'}</span></td>
+                                <td><small>{lf.paid_at ? new Date(lf.paid_at).toLocaleString() : '-'}</small></td>
+                                <td>
+                                  <span className={`badge bg-${lf.status === 'PAID' ? 'success' : lf.status === 'REFUNDED' ? 'info' : 'warning text-dark'}`}>
+                                    {lf.status}
+                                    {lf.status === 'REFUNDED' && lf.refund_amount && ` (₹${parseFloat(lf.refund_amount).toLocaleString()} back)`}
+                                  </span>
+                                </td>
+                                <td>
+                                  {lf.status === 'REFUNDED' ? (
+                                    <div style={{fontSize:'0.78rem', lineHeight:'1.4'}}>
+                                      <div className="text-success fw-semibold">✓ ₹{parseFloat(lf.refund_amount || 0).toLocaleString()} refunded</div>
+                                      {lf.refunded_at && <div className="text-muted">{new Date(lf.refunded_at).toLocaleString()}</div>}
+                                      {lf.refunded_by_name && <div className="text-muted">By: <strong>{lf.refunded_by_name}</strong></div>}
+                                      {lf.refund_reason && (
+                                        <div className="text-muted fst-italic" title={lf.refund_reason}>
+                                          {lf.refund_reason.length > 45 ? lf.refund_reason.slice(0, 45) + '…' : lf.refund_reason}
+                                        </div>
+                                      )}
+                                    </div>
+                                  ) : (
+                                    <span className="text-muted small">—</span>
+                                  )}
+                                </td>
+                                <td>
+                                  {lf.status === 'PAID' && (
+                                    canRefund ? (
+                                      <button
+                                        className="btn btn-sm btn-outline-info"
+                                        onClick={() => openRefundModal(lf)}
+                                        title="Refund 2.5% listing fee to seller wallet">
+                                        Refund 2.5%
+                                      </button>
+                                    ) : (
+                                      <span
+                                        className="text-muted small"
+                                        title={ineligibleReason}
+                                        style={{cursor:'help'}}>
+                                        ⓘ Not eligible
+                                      </span>
+                                    )
+                                  )}
+                                  {lf.status === 'REFUNDED' && (
+                                    <span className="text-success small">✓ Done</span>
+                                  )}
+                                  {lf.status === 'PENDING' && (
+                                    <span className="text-muted small">Fee unpaid</span>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })}
                       </tbody>
                     </table>
                   </div>
@@ -526,6 +673,99 @@ const AdminDashboard = () => {
         </div>
       </div>
     </div>
+
+    {/* ── Refund Listing Fee Confirmation Modal ─────────────────────────── */}
+    {refundModal.open && refundModal.lf && (
+      <div className="modal show d-block" tabIndex="-1" style={{ background: 'rgba(0,0,0,0.5)' }}>
+        <div className="modal-dialog modal-dialog-centered">
+          <div className="modal-content">
+            <div className="modal-header" style={{ background: '#16213e', borderBottom: '1px solid #0f3460' }}>
+              <h5 className="modal-title text-white">
+                <span className="me-2">💸</span> Refund Listing Fee
+              </h5>
+              <button type="button" className="btn-close btn-close-white" onClick={closeRefundModal} />
+            </div>
+            <div className="modal-body">
+              {/* Summary */}
+              <div className="alert alert-info mb-3" style={{ fontSize: '0.9rem' }}>
+                <strong>Refund Summary</strong>
+                <table className="table table-sm mb-0 mt-2">
+                  <tbody>
+                    <tr><td className="text-muted">Listing ID</td><td className="fw-semibold">#{refundModal.lf.id}</td></tr>
+                    <tr><td className="text-muted">Seller</td><td className="fw-semibold">{refundModal.lf.seller_name}</td></tr>
+                    <tr><td className="text-muted">Product</td><td>{refundModal.lf.product_title}</td></tr>
+                    <tr><td className="text-muted">Original Listing Fee (5%)</td><td className="fw-bold" style={{color:'#e94560'}}>₹{parseFloat(refundModal.lf.fee_amount).toLocaleString()}</td></tr>
+                    <tr>
+                      <td className="text-muted">Refund Amount (2.5%)</td>
+                      <td className="fw-bold text-success">
+                        ₹{(parseFloat(refundModal.lf.fee_amount) / 2).toLocaleString(undefined, {maximumFractionDigits:2})}
+                      </td>
+                    </tr>
+                    <tr>
+                      <td className="text-muted">Refund Status</td>
+                      <td><span className="badge bg-warning text-dark">{refundModal.lf.status}</span></td>
+                    </tr>
+                    {companyWallet && (
+                      <>
+                        <tr>
+                          <td className="text-muted">Company Wallet (Before)</td>
+                          <td className="fw-semibold">₹{parseFloat(companyWallet.company_balance).toLocaleString(undefined, {minimumFractionDigits:2})}</td>
+                        </tr>
+                        <tr>
+                          <td className="text-muted">Company Wallet (After)</td>
+                          <td className="fw-semibold text-danger">
+                            ₹{(parseFloat(companyWallet.company_balance) - parseFloat(refundModal.lf.fee_amount) / 2).toLocaleString(undefined, {minimumFractionDigits:2})}
+                          </td>
+                        </tr>
+                      </>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Eligibility checklist */}
+              <div className="mb-3">
+                <div className="fw-semibold mb-1" style={{fontSize:'0.88rem'}}>Eligibility Verified</div>
+                <ul className="list-unstyled mb-0" style={{fontSize:'0.85rem'}}>
+                  <li className="text-success">✅ Product is CANCELLED</li>
+                  <li className="text-success">✅ No bids have been placed</li>
+                  <li className="text-success">✅ No winning bidder / completed payment</li>
+                  <li className="text-success">✅ Listing fee not yet refunded</li>
+                </ul>
+              </div>
+
+              {/* Reason input */}
+              <div className="mb-2">
+                <label className="form-label fw-semibold" style={{fontSize:'0.88rem'}}>
+                  Refund Reason <span className="text-muted fw-normal">(optional — will be recorded)</span>
+                </label>
+                <textarea
+                  className="form-control"
+                  rows={3}
+                  value={refundReason}
+                  onChange={e => setRefundReason(e.target.value)}
+                  placeholder="Enter reason for refund…"
+                />
+              </div>
+
+              <div className="alert alert-warning mb-0" style={{fontSize:'0.82rem'}}>
+                <strong>⚠ This action is irreversible.</strong> The 2.5% listing fee will be credited to the seller's BidZone wallet. The remaining 2.5% is retained by the platform.
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-secondary" onClick={closeRefundModal}>Cancel</button>
+              <button
+                className="btn text-white"
+                style={{ background: '#e94560' }}
+                onClick={handleRefundListingFee}>
+                Confirm Refund
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   );
 };
 

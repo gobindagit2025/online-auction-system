@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { productAPI, bidAPI } from '../services/api';
+import AddressForm from '../components/AddressForm';
 import { useAuth } from '../context/AuthContext';
 
 const API_BASE = 'http://localhost:8000';
@@ -91,6 +92,14 @@ const ProductDetail = () => {
   const [loading, setLoading] = useState(true);
   const [bidMsg, setBidMsg] = useState({ type: '', text: '' });
   const [submitting, setSubmitting] = useState(false);
+  const [pickupAddress, setPickupAddress] = useState(null);
+  const [pickupLoading, setPickupLoading] = useState(false);
+  const [addressModal, setAddressModal] = useState(false);
+  const [addressSaving, setAddressSaving] = useState(false);
+  const [addressError, setAddressError] = useState('');
+  const [addressSuccess, setAddressSuccess] = useState(false);
+  const [addrTimeLeft, setAddrTimeLeft] = useState(null);
+  const [, setAddrTick] = useState(0);
 
   const fetchData = useCallback(async () => {
     try {
@@ -98,11 +107,21 @@ const ProductDetail = () => {
         productAPI.detail(id),
         bidAPI.productHistory(id)
       ]);
-      setProduct(pRes.data);
+      const prod = pRes.data;
+      setProduct(prod);
       setBids(bRes.data.results || bRes.data);
+      // Fetch pickup address for seller view
+      if (user && user.role === 'SELLER') {
+        try {
+          const addrRes = await productAPI.getPickupAddress(id);
+          setPickupAddress(addrRes.data);
+        } catch {
+          setPickupAddress(null);
+        }
+      }
     } catch { navigate('/products'); }
     setLoading(false);
-  }, [id, navigate]);
+  }, [id, navigate, user]);
 
   useEffect(() => {
     fetchData();
@@ -110,6 +129,47 @@ const ProductDetail = () => {
     const iv = setInterval(fetchData, 10000);
     return () => clearInterval(iv);
   }, [fetchData]);
+
+  // Live countdown for address edit window
+  useEffect(() => {
+    if (!product) return;
+    const compute = () => {
+      const deadline = new Date(product.created_at).getTime() + 60 * 60 * 1000;
+      return Math.max(0, Math.floor((deadline - Date.now()) / 1000));
+    };
+    setAddrTimeLeft(compute());
+    const iv = setInterval(() => {
+      setAddrTick(t => t + 1);
+      setAddrTimeLeft(compute());
+    }, 1000);
+    return () => clearInterval(iv);
+  }, [product]);
+
+  const formatCountdown = (secs) => {
+    if (secs === null) return '';
+    const m = String(Math.floor(secs / 60)).padStart(2, '0');
+    const s = String(secs % 60).padStart(2, '0');
+    return `${m}:${s}`;
+  };
+
+  const handleSaveAddress = async (values) => {
+    setAddressSaving(true);
+    setAddressError('');
+    try {
+      if (pickupAddress) {
+        await productAPI.updatePickupAddress(id, values);
+      } else {
+        await productAPI.savePickupAddress(id, values);
+      }
+      setAddressSuccess(true);
+      await fetchData();
+      setTimeout(() => { setAddressModal(false); setAddressSuccess(false); }, 1800);
+    } catch (err) {
+      const data = err.response?.data;
+      setAddressError(typeof data === 'object' ? Object.values(data).flat().join(' ') : 'Failed to save address.');
+    }
+    setAddressSaving(false);
+  };
 
   const handleBid = async (e) => {
     e.preventDefault();
@@ -181,6 +241,48 @@ const ProductDetail = () => {
                     </div>
                   </div>
                 </div>
+
+                {/* ── Seller: Add / Edit Pickup Address ─────────────────── */}
+                {user && user.role === 'SELLER' && user.username === product.seller_name && (
+                  <div className="mt-4 p-3 rounded-3 border" style={{ background: '#f8f9fa' }}>
+                    <div className="d-flex justify-content-between align-items-center flex-wrap gap-2">
+                      <div>
+                        <div className="fw-semibold small">
+                          <i className="bi bi-geo-alt-fill me-1" style={{ color: '#e94560' }}></i>
+                          Pickup Address
+                        </div>
+                        {pickupAddress ? (
+                          <small className="text-muted">
+                            {pickupAddress.address_line1}, {pickupAddress.city}, {pickupAddress.state} {pickupAddress.postal_code}
+                          </small>
+                        ) : (
+                          <small className="text-muted">No pickup address added yet.</small>
+                        )}
+                      </div>
+                      <div className="d-flex align-items-center gap-2">
+                        {/* Show countdown only when editing within 1h window */}
+                        {pickupAddress && addrTimeLeft !== null && addrTimeLeft > 0 && (
+                          <span className={`badge ${addrTimeLeft < 300 ? 'bg-warning text-dark' : 'bg-success'}`}
+                            style={{ fontSize: '0.75rem' }}>
+                            <i className="bi bi-clock me-1"></i>{formatCountdown(addrTimeLeft)}
+                          </span>
+                        )}
+                        {pickupAddress && addrTimeLeft !== null && addrTimeLeft <= 0 ? (
+                          <span className="badge bg-secondary" title="Edit window expired">
+                            <i className="bi bi-geo-alt-fill me-1"></i>Address Set
+                          </span>
+                        ) : (
+                          <button
+                            className={`btn btn-sm ${pickupAddress ? 'btn-outline-warning' : 'btn-outline-success'}`}
+                            onClick={() => { setAddressModal(true); setAddressError(''); setAddressSuccess(false); }}>
+                            <i className={`bi bi-${pickupAddress ? 'pencil' : 'geo-alt'} me-1`}></i>
+                            {pickupAddress ? 'Edit Address' : 'Add Address'}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -289,6 +391,75 @@ const ProductDetail = () => {
           </div>
         </div>
       </div>
+
+      {/* ── Pickup Address Modal (Seller: Add / Edit) ────────────────────── */}
+      {addressModal && (
+        <div className="modal show d-block" tabIndex="-1" style={{ background: 'rgba(0,0,0,0.55)', zIndex: 9999 }}>
+          <div className="modal-dialog modal-dialog-centered modal-lg">
+            <div className="modal-content border-0 shadow-lg" style={{ borderRadius: 16 }}>
+              <div className="modal-header text-white border-0"
+                style={{ background: 'linear-gradient(135deg,#1a1a2e,#0f3460)', borderRadius: '16px 16px 0 0' }}>
+                <div>
+                  <h5 className="modal-title fw-bold mb-0">
+                    <i className="bi bi-geo-alt-fill me-2" style={{ color: '#e94560' }}></i>
+                    {pickupAddress ? 'Edit Pickup Address' : 'Add Pickup Address'}
+                  </h5>
+                  <small className="opacity-75">{product.title}</small>
+                </div>
+                <div className="d-flex align-items-center gap-3">
+                  {pickupAddress && addrTimeLeft !== null && (
+                    <div className={`badge fs-6 px-3 py-2 ${addrTimeLeft <= 0 ? 'bg-danger' : addrTimeLeft < 300 ? 'bg-warning text-dark' : 'bg-success'}`}>
+                      <i className="bi bi-clock me-1"></i>
+                      {addrTimeLeft <= 0 ? 'Window Closed' : formatCountdown(addrTimeLeft)}
+                    </div>
+                  )}
+                  <button type="button" className="btn-close btn-close-white" onClick={() => setAddressModal(false)} />
+                </div>
+              </div>
+              <div className="modal-body p-4">
+                {addressSuccess ? (
+                  <div className="text-center py-5">
+                    <div style={{ width: 64, height: 64, borderRadius: '50%', background: '#28a745', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px' }}>
+                      <i className="bi bi-check-lg text-white fs-2"></i>
+                    </div>
+                    <h5 className="fw-bold text-success">Pickup Address Saved!</h5>
+                    <p className="text-muted small">Closing automatically…</p>
+                  </div>
+                ) : (pickupAddress && addrTimeLeft !== null && addrTimeLeft <= 0) ? (
+                  <div className="alert alert-danger text-center py-4">
+                    <i className="bi bi-clock-history fs-2 d-block mb-2"></i>
+                    <h6 className="fw-bold">Edit Window Expired</h6>
+                    <p className="mb-0 small">The 1-hour edit window has passed. Contact support if you need to update this address.</p>
+                  </div>
+                ) : (
+                  <>
+                    {pickupAddress ? (
+                      <div className="alert alert-warning py-2 mb-3 d-flex align-items-center gap-2 small">
+                        <i className="bi bi-exclamation-triangle-fill"></i>
+                        <span>You can edit this pickup address within <strong>1 hour</strong> of listing creation.
+                          {addrTimeLeft !== null && addrTimeLeft > 0 && <> Time remaining: <strong>{formatCountdown(addrTimeLeft)}</strong></>}
+                        </span>
+                      </div>
+                    ) : (
+                      <div className="alert alert-info py-2 mb-3 d-flex align-items-center gap-2 small">
+                        <i className="bi bi-info-circle-fill"></i>
+                        <span>Add the pickup address for this listing. Buyers will use this to arrange collection.</span>
+                      </div>
+                    )}
+                    {addressError && <div className="alert alert-danger py-2 small">{addressError}</div>}
+                    <AddressForm
+                      initialValues={pickupAddress || {}}
+                      onSubmit={handleSaveAddress}
+                      loading={addressSaving}
+                      submitLabel={pickupAddress ? 'Update Pickup Address' : 'Save Pickup Address'}
+                    />
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

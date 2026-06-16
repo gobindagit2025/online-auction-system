@@ -113,6 +113,11 @@ class CompanyWallet(models.Model):
         self.balance += amount
         self.save(update_fields=['balance', 'updated_at'])
 
+    def debit(self, amount):
+        """Deduct amount from company wallet (e.g. listing fee refund)."""
+        self.balance -= amount
+        self.save(update_fields=['balance', 'updated_at'])
+
 
 # ─────────────────────────────────────────────────────────
 # 4.  Seller Listing Fee  (5% of starting_price)
@@ -206,8 +211,9 @@ class Payment(models.Model):
     card_last4     = models.CharField(max_length=4, blank=True, null=True)
     qr_ref         = models.CharField(max_length=200, blank=True, null=True)
 
-    # 24-hour deadline
-    payment_deadline = models.DateTimeField(null=True, blank=True, help_text="Winner must pay before this time")
+    # 24-hour countdown window
+    countdown_start  = models.DateTimeField(null=True, blank=True, help_text="When the 24h payment countdown started (auction close time)")
+    payment_deadline = models.DateTimeField(null=True, blank=True, help_text="Winner must pay before this time (countdown_start + 24h)")
 
     created_at     = models.DateTimeField(auto_now_add=True)
     paid_at        = models.DateTimeField(null=True, blank=True)

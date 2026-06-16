@@ -6,6 +6,7 @@ Full payment system: listing fees, winner payments, wallets, withdrawals
 import uuid
 from decimal import Decimal
 from django.utils import timezone
+from django.db import transaction as db_transaction
 from rest_framework import generics, status, permissions
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -176,35 +177,72 @@ class RefundUnsoldListingFeeView(APIView):
             )
 
         # ── 7. Accept optional reason from admin ──────────────────────────────
-        refund_reason = request.data.get('reason', 'Admin manually cancelled the listing before any bids were placed.').strip() or 'Admin manually cancelled the listing before any bids were placed.'
-
-        # ── 8. Process refund ─────────────────────────────────────────────────
-        refund_amt = round(Decimal('0.025') * product.starting_price, 2)
-        seller_wallet, _ = Wallet.objects.get_or_create(user=lf.seller)
-        seller_wallet.credit(
-            refund_amt,
-            description=f"Listing fee refund (2.5%) for cancelled product: {product.title}",
-            ref_id=f"LFREFUND-{uuid.uuid4().hex[:10].upper()}"
+        refund_reason = (
+            request.data.get('reason', '').strip()
+            or 'Admin manually cancelled the listing before any bids were placed.'
         )
 
-        lf.status        = ListingFeePayment.Status.REFUNDED
-        lf.refund_amount = refund_amt
-        lf.refunded_at   = timezone.now()
-        lf.refunded_by   = request.user
-        lf.refund_reason = refund_reason
-        lf.save()
+        # ── 8. Validate company wallet has sufficient balance ─────────────────
+        refund_amt  = round(Decimal('0.025') * product.starting_price, 2)
+        company_wallet = CompanyWallet.get()
+        if company_wallet.balance < refund_amt:
+            return Response(
+                {
+                    'error': (
+                        f'Company wallet balance (₹{company_wallet.balance}) is insufficient '
+                        f'to process refund of ₹{refund_amt}.'
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
-        return Response({
-            'message': f'₹{refund_amt} (2.5% listing fee) successfully refunded to {lf.seller.username}\'s BidZone wallet.',
+        # ── 9. Process refund atomically ──────────────────────────────────────
+        company_balance_before = company_wallet.balance
+
+        ref_id = f"LFREFUND-{uuid.uuid4().hex[:10].upper()}"
+        with db_transaction.atomic():
+            # Credit seller wallet
+            seller_wallet, _ = Wallet.objects.get_or_create(user=lf.seller)
+            seller_wallet.credit(
+                refund_amt,
+                description=f"Listing fee refund (2.5%) for cancelled product: {product.title}",
+                ref_id=ref_id,
+            )
+
+            # Debit company wallet (same ref_id for traceability)
+            company_wallet.refresh_from_db()
+            company_wallet.debit(refund_amt)
+
+            # Update listing fee record
+            now = timezone.now()
+            lf.status        = ListingFeePayment.Status.REFUNDED
+            lf.refund_amount = refund_amt
+            lf.refunded_at   = now
+            lf.refunded_by   = request.user
+            lf.refund_reason = refund_reason
+            lf.save()
+
+        company_balance_after = company_wallet.balance
+
+        return Response ({
+            'message': (
+                f'₹{refund_amt} (2.5% listing fee) successfully refunded to '
+                f'{lf.seller.username} s BidZone wallet. Company wallet debited.'
+            ),
             'refund_details': {
-                'refund_amount': str(refund_amt),
-                'refunded_at': lf.refunded_at.isoformat(),
-                'refunded_by': request.user.username,
-                'refund_reason': refund_reason,
-                'seller': lf.seller.username,
-                'product': product.title,
+                'listing_id':                   lf.id,
+                'seller':                       lf.seller.username,
+                'product':                      product.title,
+                'original_listing_fee':         str(lf.fee_amount),
+                'refund_amount':                str(refund_amt),
+                'refund_status':                lf.status,
+                'refunded_at':                  lf.refunded_at.isoformat(),
+                'refunded_by':                  request.user.username,
+                'refund_reason':                refund_reason,
+                'company_wallet_balance_before': str(company_balance_before),
+                'company_wallet_balance_after':  str(company_balance_after),
             },
-            'listing_fee': ListingFeeSerializer(lf).data
+            'listing_fee': ListingFeeSerializer(lf).data,
         })
 
 
@@ -279,6 +317,7 @@ class CheckDeadlineView(APIView):
     """
     POST /api/payments/check-deadline/<product_id>/
     Checks if winner's 24h deadline has passed and auto-shifts if needed.
+    Called by frontend polling to trigger cascade without a cron job.
     """
     permission_classes = [permissions.IsAuthenticated]
 
@@ -294,9 +333,93 @@ class CheckDeadlineView(APIView):
 
         if payment and payment.is_deadline_passed:
             _expire_and_shift(product, payment)
-            return Response({'shifted': True, 'message': 'Winner deadline passed. Shifted to next bidder.'})
+            # Fetch new pending payment for next bidder (if any)
+            new_payment = Payment.objects.filter(
+                product=product, status=Payment.Status.PENDING
+            ).first()
+            return Response({
+                'shifted': True,
+                'message': 'Winner deadline passed. Shifted to next bidder.',
+                'new_winner': new_payment.buyer.username if new_payment else None,
+                'new_payment_id': new_payment.id if new_payment else None,
+                'new_deadline': new_payment.payment_deadline.isoformat() if new_payment else None,
+            })
 
         return Response({'shifted': False, 'message': 'Deadline still active or no pending payment.'})
+
+
+class WinnerCountdownView(APIView):
+    """
+    GET /api/payments/winner-countdown/<product_id>/
+    Returns full countdown details for the current winning payment of a product.
+    Used by buyer dashboard and admin panel for live countdown display.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, product_id):
+        try:
+            product = Product.objects.get(pk=product_id)
+        except Product.DoesNotExist:
+            return Response({'error': 'Product not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        payment = Payment.objects.filter(
+            product=product, status=Payment.Status.PENDING
+        ).select_related('buyer', 'product', 'winning_bid').first()
+
+        if not payment:
+            # Check if already completed
+            completed = Payment.objects.filter(
+                product=product, status=Payment.Status.COMPLETED
+            ).first()
+            if completed:
+                return Response({
+                    'status': 'COMPLETED',
+                    'message': 'Payment already completed.',
+                    'payment': PaymentDetailSerializer(completed).data,
+                })
+            return Response({
+                'status': 'NO_PENDING',
+                'message': 'No active payment countdown for this product.',
+            })
+
+        # Auto-check deadline on every fetch
+        if payment.is_deadline_passed:
+            _expire_and_shift(product, payment)
+            new_payment = Payment.objects.filter(
+                product=product, status=Payment.Status.PENDING
+            ).first()
+            return Response({
+                'status': 'SHIFTED',
+                'message': 'Previous winner expired. Shifted to next bidder.',
+                'new_winner': new_payment.buyer.username if new_payment else None,
+                'new_deadline': new_payment.payment_deadline.isoformat() if new_payment else None,
+                'payment': PaymentDetailSerializer(new_payment).data if new_payment else None,
+            })
+
+        now = timezone.now()
+        remaining = payment.payment_deadline - now
+        total_secs = max(0, int(remaining.total_seconds()))
+        hours, rem = divmod(total_secs, 3600)
+        minutes, secs = divmod(rem, 60)
+
+        return Response({
+            'status': 'PENDING',
+            'payment': PaymentDetailSerializer(payment).data,
+            'countdown': {
+                'total_seconds': total_secs,
+                'hours': hours,
+                'minutes': minutes,
+                'seconds': secs,
+                'display': f"{hours} Hours {minutes} Minutes {secs} Seconds Remaining",
+                'countdown_start': payment.countdown_start.isoformat() if payment.countdown_start else None,
+                'payment_deadline': payment.payment_deadline.isoformat(),
+                'auction_end_time': product.auction_end_time.isoformat(),
+                'is_urgent': total_secs < 6 * 3600,  # under 6 hours = urgent
+            },
+            'winner': payment.buyer.username,
+            'winning_amount': str(payment.amount),
+            'product_title': product.title,
+        })
 
 
 class MyPaymentsView(generics.ListAPIView):

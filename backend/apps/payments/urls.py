@@ -13,6 +13,7 @@ from .views import (
     InitiatePaymentView,
     CompletePaymentView,
     CheckDeadlineView,
+    WinnerCountdownView,
     MyPaymentsView,
     PaymentDetailView,
     AdminPaymentListView,
@@ -41,6 +42,7 @@ urlpatterns = [
     path('initiate/',                            InitiatePaymentView.as_view(),          name='initiate-payment'),
     path('complete/',                            CompletePaymentView.as_view(),          name='complete-payment'),
     path('check-deadline/<int:product_id>/',     CheckDeadlineView.as_view(),            name='check-deadline'),
+    path('winner-countdown/<int:product_id>/',   WinnerCountdownView.as_view(),          name='winner-countdown'),
     path('my-payments/',                         MyPaymentsView.as_view(),               name='my-payments'),
 
     # ── Buyer Delivery Address (Feature: Buyer Delivery Address Collection) ──
