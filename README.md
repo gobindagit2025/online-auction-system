@@ -10,23 +10,23 @@ auction_system/
 ├── backend/
 │   ├── auction_project/          # Django project config
 │   │   ├── __init__.py
-│   │   ├── settings.py           # Full Django + JWT + MySQL config
+│   │   ├── settings.py           # Full Django + JWT + MySQL config (unpaginated list APIs)
 │   │   ├── urls.py               # Root URL router
 │   │   └── wsgi.py
 │   ├── apps/
 │   │   ├── __init__.py
-│   │   ├── users/                # User module (register, login, roles)
-│   │   │   ├── models.py         # Custom User model (Admin/Seller/Buyer)
-│   │   │   ├── serializers.py    # Registration, login, profile serializers
-│   │   │   ├── views.py          # Auth, profile, admin user management
+│   │   ├── users/                # User module (register, login, roles, profile, password reset)
+│   │   │   ├── models.py         # Custom User model (Admin/Seller/Buyer) + PasswordResetOTP
+│   │   │   ├── serializers.py    # Registration, login, profile (with stats) serializers
+│   │   │   ├── views.py          # Auth, profile, admin user management, OTP password reset
 │   │   │   ├── urls.py           # /api/users/* routes
 │   │   │   ├── permissions.py    # Role-based permission classes
 │   │   │   ├── admin.py
 │   │   │   └── apps.py
-│   │   ├── products/             # Product/Auction module
-│   │   │   ├── models.py         # Product with timing & status
-│   │   │   ├── serializers.py
-│   │   │   ├── views.py          # CRUD + admin controls
+│   │   ├── products/              # Product/Auction module
+│   │   │   ├── models.py         # Product + ProductImage + PickupAddress
+│   │   │   ├── serializers.py    # Product + PickupAddress serializers (incl. admin view)
+│   │   │   ├── views.py          # CRUD, admin controls, pickup-address endpoints, auto-close sweep
 │   │   │   ├── urls.py           # /api/products/* routes
 │   │   │   ├── admin.py
 │   │   │   └── apps.py
@@ -37,10 +37,11 @@ auction_system/
 │   │   │   ├── urls.py           # /api/bids/* routes
 │   │   │   ├── admin.py
 │   │   │   └── apps.py
-│   │   └── payments/             # Payment module
-│   │       ├── models.py         # Simulated payment tracking
-│   │       ├── serializers.py    # Initiate & complete payment
-│   │       ├── views.py          # Payment flow views
+│   │   └── payments/              # Payment, wallet & address module
+│   │       ├── models.py         # Payment, Wallet, WalletTransaction, CompanyWallet,
+│   │       │                       ListingFeePayment, WithdrawalRequest, DeliveryAddress
+│   │       ├── serializers.py    # Payment/wallet flows + countdown helpers + DeliveryAddress
+│   │       ├── views.py          # Payment flow, wallet, withdrawals, listing fees, delivery address
 │   │       ├── urls.py           # /api/payments/* routes
 │   │       ├── admin.py
 │   │       └── apps.py
@@ -57,16 +58,26 @@ auction_system/
     │   │   └── api.js            # Axios instance + all API calls
     │   ├── components/
     │   │   ├── Navbar.js         # Role-aware navigation
-    │   │   └── ProtectedRoute.js # Role-based route guard
+    │   │   ├── ProtectedRoute.js # Role-based route guard
+    │   │   ├── PaymentModal.js   # Winner payment modal (UPI/QR/Card/Net Banking)
+    │   │   ├── ListingFeeModal.js# Seller listing-fee payment modal
+    │   │   └── AddressForm.js    # Shared validated address form (pickup + delivery)
     │   ├── pages/
-    │   │   ├── Home.js           # Landing page
-    │   │   ├── Login.js          # JWT login form
-    │   │   ├── Register.js       # User registration
-    │   │   ├── ProductList.js    # Browse all auctions
-    │   │   ├── ProductDetail.js  # Auction detail + live bidding
-    │   │   ├── SellerDashboard.js  # Seller: manage listings
-    │   │   ├── BuyerDashboard.js   # Buyer: bids + payments
-    │   │   └── AdminDashboard.js   # Admin: users, products, bids
+    │   │   ├── Home.js              # Landing page
+    │   │   ├── Login.js             # JWT login form
+    │   │   ├── Register.js          # User registration
+    │   │   ├── ForgotPassword.js    # OTP-based password reset
+    │   │   ├── ChangePassword.js    # Change password (logged in)
+    │   │   ├── ProductList.js       # Browse all auctions (returns ALL listings, no cap)
+    │   │   ├── ProductDetail.js     # Auction detail + live bidding
+    │   │   ├── ProfilePage.js       # "My Profile" — view + edit (Feature: User Profile Page)
+    │   │   ├── PickupAddressPage.js # Seller pickup address form (post listing-fee payment)
+    │   │   ├── DeliveryAddressPage.js # Buyer delivery address form (post winner payment)
+    │   │   ├── OrderDetail.js       # Order detail page (payment + delivery address)
+    │   │   ├── WalletPage.js        # Personal BidZone wallet + transaction history
+    │   │   ├── SellerDashboard.js   # Seller: manage listings, pickup address, listing fee
+    │   │   ├── BuyerDashboard.js    # Buyer: bids, live payment countdown, payments, addresses
+    │   │   └── AdminDashboard.js    # Admin: clickable summary cards + full data drill-downs
     │   ├── App.js                # React Router setup
     │   └── index.js
     └── package.json
@@ -185,9 +196,12 @@ Frontend runs at: http://localhost:3000
 | POST | /api/users/login/ | None | Login, get JWT tokens |
 | POST | /api/users/logout/ | JWT | Blacklist refresh token |
 | POST | /api/users/token/refresh/ | None | Refresh access token |
-| GET | /api/users/profile/ | JWT | Get own profile |
-| PATCH | /api/users/profile/ | JWT | Update profile |
+| GET | /api/users/profile/ | JWT | Get own profile (incl. listings/wins/participation stats) |
+| PATCH | /api/users/profile/ | JWT | Update profile picture/full name/phone/address (email & role read-only) |
 | POST | /api/users/change-password/ | JWT | Change password |
+| POST | /api/users/forgot-password/ | None | Request a password-reset OTP by email |
+| POST | /api/users/verify-otp/ | None | Verify the OTP sent to email |
+| POST | /api/users/reset-password/ | None | Set a new password using a verified OTP |
 
 ### ADMIN - USER MANAGEMENT
 | Method | URL | Auth | Description |
@@ -200,31 +214,37 @@ Frontend runs at: http://localhost:3000
 ### PRODUCT ENDPOINTS
 | Method | URL | Auth | Description |
 |--------|-----|------|-------------|
-| GET | /api/products/ | None | List all products (search/filter) |
+| GET | /api/products/ | None | List **all** products (search/filter, no record limit) |
 | GET | /api/products/{id}/ | None | Product detail |
 | POST | /api/products/create/ | Seller | Create new listing |
 | PATCH | /api/products/{id}/update/ | Seller | Update (pending only) |
-| GET | /api/products/my-products/ | Seller | Own product list |
+| GET | /api/products/my-products/ | Seller | Own product list — **all** listings, every status |
+| GET/POST | /api/products/{id}/pickup-address/ | Seller/Admin | Get or save the seller's pickup address for this listing |
 | GET | /api/products/admin/all/ | Admin | All products |
 | PATCH | /api/products/admin/{id}/status/ | Admin | Change status |
+| GET | /api/products/admin/pickup-addresses/ | Admin | All seller pickup addresses (listing, seller, address, contact) |
 
 ### BID ENDPOINTS
 | Method | URL | Auth | Description |
 |--------|-----|------|-------------|
 | POST | /api/bids/place/ | Buyer | Place a bid |
 | GET | /api/bids/product/{product_id}/ | None | Bid history for product |
-| GET | /api/bids/my-bids/ | Buyer | Own bid history |
+| GET | /api/bids/my-bids/ | Buyer | Own bid history — all records |
 | GET | /api/bids/my-winning-bids/ | Buyer | Won auctions |
 | GET | /api/bids/admin/all/ | Admin | All bids |
 
 ### PAYMENT ENDPOINTS
 | Method | URL | Auth | Description |
 |--------|-----|------|-------------|
-| POST | /api/payments/initiate/ | Buyer | Initiate payment |
-| POST | /api/payments/complete/ | Buyer | Complete payment |
-| GET | /api/payments/my-payments/ | Buyer | Payment history |
+| POST | /api/payments/initiate/ | Buyer | Initiate winning-bid payment |
+| POST | /api/payments/complete/ | Buyer | Complete payment (stops the 24h countdown) |
+| GET | /api/payments/check-deadline/{product_id}/ | JWT | Check/trigger 24h deadline shift to next bidder |
+| GET | /api/payments/winner-countdown/{product_id}/ | JWT | Full live countdown details for a product's payment |
+| GET | /api/payments/my-payments/ | Buyer | Payment history — all records, countdown auto-starts on auction close |
+| GET/POST | /api/payments/{payment_id}/delivery-address/ | Buyer | Get or save delivery address for a completed order |
 | GET | /api/payments/{id}/ | Buyer/Admin | Payment detail |
-| GET | /api/payments/admin/all/ | Admin | All payments |
+| GET | /api/payments/admin/all/ | Admin | All payments (with countdown fields) |
+| GET | /api/payments/admin/delivery-addresses/ | Admin | All buyer delivery addresses (order, winner, address, contact) |
 
 ---
 
@@ -283,11 +303,112 @@ Frontend runs at: http://localhost:3000
 | product_id | BIGINT FK | → products.id (OneToOne) |
 | winning_bid_id | BIGINT FK | → bids.id (OneToOne) |
 | amount | DECIMAL(12,2) | = winning bid amount |
-| status | VARCHAR(10) | PENDING/COMPLETED/FAILED/REFUNDED |
-| payment_method | VARCHAR(15) | UPI/CREDIT_CARD/etc |
+| status | VARCHAR(10) | PENDING/COMPLETED/FAILED/EXPIRED/REFUNDED |
+| payment_method | VARCHAR(15) | UPI/CREDIT_CARD/DEBIT_CARD/NET_BANKING/QR |
 | transaction_id | VARCHAR(100) | Auto-generated TXN-XXXX |
+| countdown_start | DATETIME | Set the instant the auction closes (= auction_end_time) |
+| payment_deadline | DATETIME | countdown_start + 24 hours |
 | created_at | DATETIME | |
 | paid_at | DATETIME | Set on completion |
+
+### pickup_addresses table
+*(Feature: Seller Pickup Address Collection — one row per listing, frozen even if the seller later edits their profile)*
+
+| Column | Type | Notes |
+|--------|------|-------|
+| id | BIGINT PK | |
+| product_id | BIGINT FK | → products.id (OneToOne) |
+| full_name | VARCHAR(150) | |
+| phone_number | VARCHAR(15) | |
+| email | VARCHAR(254) | |
+| address_line1 | VARCHAR(255) | |
+| address_line2 | VARCHAR(255) | Optional |
+| city | VARCHAR(100) | |
+| state | VARCHAR(100) | |
+| postal_code | VARCHAR(20) | |
+| country | VARCHAR(100) | |
+| created_at / updated_at | DATETIME | |
+
+### delivery_addresses table
+*(Feature: Buyer Delivery Address Collection — one row per completed order/payment)*
+
+| Column | Type | Notes |
+|--------|------|-------|
+| id | BIGINT PK | |
+| payment_id | BIGINT FK | → payments.id (OneToOne) |
+| full_name | VARCHAR(150) | |
+| phone_number | VARCHAR(15) | |
+| email | VARCHAR(254) | |
+| address_line1 | VARCHAR(255) | |
+| address_line2 | VARCHAR(255) | Optional |
+| city | VARCHAR(100) | |
+| state | VARCHAR(100) | |
+| postal_code | VARCHAR(20) | |
+| country | VARCHAR(100) | |
+| created_at / updated_at | DATETIME | |
+
+### wallets table
+| Column | Type | Notes |
+|--------|------|-------|
+| id | BIGINT PK | |
+| user_id | BIGINT FK | → users.id (OneToOne) — one BidZone Wallet per user |
+| balance | DECIMAL(14,2) | Current wallet balance |
+| created_at / updated_at | DATETIME | |
+
+### wallet_transactions table
+| Column | Type | Notes |
+|--------|------|-------|
+| id | BIGINT PK | |
+| wallet_id | BIGINT FK | → wallets.id |
+| transaction_type | VARCHAR(6) | CREDIT / DEBIT |
+| amount | DECIMAL(14,2) | |
+| description | VARCHAR(255) | |
+| ref_id | VARCHAR(100) | Reference id (e.g. related transaction/order) |
+| created_at | DATETIME | Auto |
+
+### company_wallet table
+*(Singleton — collects platform listing fees)*
+
+| Column | Type | Notes |
+|--------|------|-------|
+| id | BIGINT PK | Always a single row |
+| balance | DECIMAL(14,2) | Current company balance |
+| updated_at | DATETIME | |
+
+### listing_fee_payments table
+| Column | Type | Notes |
+|--------|------|-------|
+| id | BIGINT PK | |
+| seller_id | BIGINT FK | → users.id |
+| product_id | BIGINT FK | → products.id |
+| fee_amount | DECIMAL | 5% of starting price |
+| status | VARCHAR | PENDING/PAID/REFUNDED |
+| payment_method | VARCHAR | |
+| transaction_id | VARCHAR | |
+| paid_at / refunded_at | DATETIME | |
+| refund_amount | DECIMAL | 2.5% of starting price, on unsold refund |
+| refunded_by_id | BIGINT FK | → users.id (admin who processed refund) |
+| refund_reason | VARCHAR | |
+
+### withdrawal_requests table
+| Column | Type | Notes |
+|--------|------|-------|
+| id | BIGINT PK | |
+| user_id | BIGINT FK | → users.id |
+| amount | DECIMAL | |
+| upi_id | VARCHAR | |
+| status | VARCHAR | PENDING/APPROVED/REJECTED |
+| admin_note | VARCHAR | |
+| created_at | DATETIME | |
+
+### password_reset_otps table
+| Column | Type | Notes |
+|--------|------|-------|
+| id | BIGINT PK | |
+| user_id | BIGINT FK | → users.id |
+| otp | VARCHAR(6) | |
+| is_used | BOOLEAN | |
+| created_at / expires_at | DATETIME | OTP expires after 10 minutes |
 
 ---
 
@@ -299,14 +420,14 @@ POST http://localhost:8000/api/users/register/
 Content-Type: application/json
 
 {
-  "username": "john_buyer",
-  "email": "john@email.com",
-  "first_name": "John",
-  "last_name": "Doe",
+  "username": "asdf1",
+  "email": "asdf1@email.com",
+  "first_name": "Gobinda",
+  "last_name": "Panda",
   "password": "SecurePass123!",
   "password2": "SecurePass123!",
   "role": "BUYER",
-  "phone": "9876543210"
+  "phone": "+91 7070707070"
 }
 ```
 
@@ -410,6 +531,18 @@ Response: { "message": "User blocked successfully." }
 - **Seller Protection**: Sellers cannot bid on their own products
 - **Admin Restrictions**: Admin cannot be blocked by another admin
 - **Product Edit Lock**: Products can only be edited while in PENDING status
+- **Pickup Address Lock**: A seller's pickup address is saved per-listing, not on the
+  user profile — editing the profile address later never changes an existing listing's
+  pickup address
+- **Delivery Address**: One delivery address per completed order (payment), collected
+  immediately after the winner's payment succeeds
+- **Profile Read-Only Fields**: Email and account role can never be edited from "My Profile"
+- **24h Payment Countdown**: Starts automatically the instant an auction closes (never
+  before), is never duplicated for the same winner, and stops immediately once payment
+  is completed
+- **No Record Caps**: All dashboard/list endpoints (products, bids, payments, wallets,
+  withdrawals, listing fees, pickup/delivery addresses, users) return every matching
+  record — there is no pagination limit anywhere in the app
 
 ## 🚀 RUNNING IN PRODUCTION
 
@@ -500,5 +633,92 @@ All payments support:
 
 ### New Migrations Required
 ```bash
+python manage.py migrate payments
+```
+
+---
+
+## 🆕 NEW FEATURES — Addresses, Profile, Admin Visibility & Countdown Fix
+
+### 1. 📦 Seller Pickup Address (per listing)
+- Sellers can add/edit a pickup address for any of their own listings from the
+  product details page or Seller Dashboard — both immediately after paying the
+  listing fee, and any time afterwards.
+- The address is stored **per listing** (`pickup_addresses` table), not on the
+  user's profile, so editing the profile address later never changes an
+  existing listing's saved pickup address.
+- Seller Dashboard shows an "Add Address" / "Edit Address" action per listing,
+  with a 1-hour reverse countdown badge on newly created listings as a reminder.
+- Buyers can view the seller's pickup address wherever the product details
+  page already exposes seller info.
+
+### 2. 🚚 Buyer Delivery Address (per order)
+- After a winner completes payment, they're redirected to a Delivery Address
+  page; the address is saved against that specific completed order/payment
+  (`delivery_addresses` table) and shown on the new Order Detail page.
+
+### 3. 👤 My Profile Page
+- Dedicated "My Profile" page (replacing the old profile dropdown behavior)
+  showing profile picture, full name, username, email, phone, account type,
+  registration date, total listings created, total auctions won, and total
+  auctions participated in.
+- "Edit Profile" lets a user update their picture, full name, phone, and
+  address. Email and account role are always read-only.
+
+### 4. 🛡️ Admin Visibility
+- Admin Dashboard has dedicated **Pickup Addresses** and **Delivery
+  Addresses** tabs listing every seller pickup address (listing, seller,
+  address, contact) and every buyer delivery address (order, winner,
+  address, contact) platform-wide.
+
+### 5. ⏱️ Winner Payment Countdown — Fixed
+- Previously the 24h payment countdown only started the first time a buyer
+  manually opened the payment screen, so it never appeared on a fresh dashboard
+  load. It now starts **automatically the instant an auction closes** and a
+  winner is determined — visible immediately on both the Buyer Dashboard and
+  the Admin Dashboard's Payments tab, with a live Days/Hours/Minutes/Seconds
+  countdown that ticks every second, survives refresh/logout/server restart,
+  and stops the moment payment is completed.
+
+### 6. 📜 No More Record Limits
+- Every list endpoint (Browse Auctions, Seller's own listings, buyer bid/payment
+  history, and all Admin Dashboard tables) now returns **every** matching
+  record — the old default 10-records-per-page cap has been removed.
+  Existing search, filtering, and sorting are unaffected.
+
+### 7. 🖱️ Clickable Admin Summary Cards
+- The 6 summary cards at the top of the Admin Dashboard (Total Users, Active
+  Auctions, Total Bids, Revenue, Company Wallet, Pending Withdrawals) are now
+  clickable shortcuts that jump straight to — and pre-filter — their
+  corresponding section:
+  - **Total Users** → Users tab, Sellers & Buyers only (no admin accounts)
+  - **Active Auctions** → Products tab, filtered to `ACTIVE` only
+  - **Total Bids** → Bids tab, filtered to the highest/winning bid per product
+  - **Revenue** → Payments tab, plus a full wallet credit/debit ledger with
+    transaction id, date/time, and running balance after each transaction
+  - **Company Wallet** → a dedicated Company Wallet Details page with total
+    credits, total debits, current balance, and the complete transaction
+    history (listing fee credits, 2.5% refund debits, reference auction/user)
+  - **Pending Withdrawals** → Withdrawals tab, filtered to `PENDING`
+
+### New API Endpoints (Addresses)
+
+| Method | URL | Auth | Description |
+|--------|-----|------|-------------|
+| GET/POST | /api/products/{id}/pickup-address/ | Seller/Admin | Get/save a listing's pickup address |
+| GET | /api/products/admin/pickup-addresses/ | Admin | All seller pickup addresses |
+| GET/POST | /api/payments/{payment_id}/delivery-address/ | Buyer | Get/save an order's delivery address |
+| GET | /api/payments/admin/delivery-addresses/ | Admin | All buyer delivery addresses |
+
+### New Database Tables
+
+| Table | Purpose |
+|-------|---------|
+| pickup_addresses | Seller pickup address, one per listing |
+| delivery_addresses | Buyer delivery address, one per completed order |
+
+### New Migrations Required
+```bash
+python manage.py migrate products
 python manage.py migrate payments
 ```
