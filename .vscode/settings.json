@@ -1,9 +1,11 @@
 {
     "cSpell.words": [
         "createsuperuser",
+        "Gobinda",
         "gunicorn",
         "makemigrations",
         "nums",
+        "otps",
         "Paytm",
         "runserver",
         "txns",
