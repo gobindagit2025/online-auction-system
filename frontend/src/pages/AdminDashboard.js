@@ -1,5 +1,5 @@
 // src/pages/AdminDashboard.js
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { adminAPI, productAPI, bidAPI, paymentAPI, adminWalletAPI } from '../services/api';
 
 // ─── Admin Live Countdown ──────────────────────────────────────────────────
@@ -49,6 +49,32 @@ const AdminDashboard = () => {
   const [msg, setMsg] = useState({ type: '', text: '' });
   const [refundModal, setRefundModal] = useState({ open: false, lf: null });
   const [refundReason, setRefundReason] = useState('');
+
+  // ── Drill-down filters set by the clickable summary cards ──────────────
+  // These only pre-select a view inside the existing tabs/tables — no new
+  // data is fetched and no existing admin functionality is altered.
+  const [userRoleFilter, setUserRoleFilter] = useState('ALL');           // ALL | SELLER | BUYER
+  const [productStatusFilter, setProductStatusFilter] = useState('ALL'); // ALL | ACTIVE
+  const [bidsViewFilter, setBidsViewFilter] = useState('ALL');           // ALL | WINNING
+  const [withdrawalStatusFilter, setWithdrawalStatusFilter] = useState('ALL'); // ALL | PENDING
+  const [showCompanyWalletPage, setShowCompanyWalletPage] = useState(false);
+
+  const tabPanelRef = useRef(null);
+
+  // Smoothly switches to the tab a summary card represents, applying that
+  // card's drill-down filter. Tabs/tables themselves are unchanged — this
+  // is purely a navigation shortcut as required.
+  const goToCard = (tabKey, opts = {}) => {
+    if (opts.userRole !== undefined) setUserRoleFilter(opts.userRole);
+    if (opts.productStatus !== undefined) setProductStatusFilter(opts.productStatus);
+    if (opts.bidsView !== undefined) setBidsViewFilter(opts.bidsView);
+    if (opts.withdrawalStatus !== undefined) setWithdrawalStatusFilter(opts.withdrawalStatus);
+    setShowCompanyWalletPage(false);
+    setActiveTab(tabKey);
+    requestAnimationFrame(() => {
+      tabPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  };
 
   const fetchAll = async () => {
     setLoading(true);
@@ -165,6 +191,102 @@ const AdminDashboard = () => {
     companyBalance: companyWallet ? parseFloat(companyWallet.company_balance) : 0,
   };
 
+  // ── Company Wallet transaction history (derived, read-only display) ───
+  // Built entirely from the already-fetched `listingFees` records — the
+  // only two events that actually move the company wallet balance today
+  // (listing fee credit on payment, 2.5% refund debit on cancellation).
+  // No new table/model/calculation is introduced; the balances below are
+  // purely a chronological replay of existing ListingFeePayment rows, and
+  // the final balance is reconciled against the real `companyWallet`
+  // value returned by the existing /admin/company-wallet/ endpoint.
+  const companyWalletLedger = (() => {
+    const events = [];
+    listingFees.forEach(lf => {
+      if (lf.status === 'PAID' || lf.status === 'REFUNDED') {
+        events.push({
+          date: lf.paid_at,
+          type: 'Listing Fee Credit',
+          credit: parseFloat(lf.fee_amount),
+          debit: 0,
+          reference_auction: lf.product_title,
+          reference_user: lf.seller_name,
+          transaction_id: lf.transaction_id,
+        });
+      }
+      if (lf.status === 'REFUNDED' && lf.refund_amount) {
+        events.push({
+          date: lf.refunded_at,
+          type: 'Listing Fee Refund Debit (2.5%)',
+          credit: 0,
+          debit: parseFloat(lf.refund_amount),
+          reference_auction: lf.product_title,
+          reference_user: lf.seller_name,
+          transaction_id: lf.transaction_id ? `${lf.transaction_id}-REFUND` : '-',
+        });
+      }
+    });
+    events.sort((a, b) => new Date(a.date || 0) - new Date(b.date || 0));
+    let running = 0;
+    const rows = events.map(e => {
+      running += e.credit - e.debit;
+      return { ...e, balanceAfter: running };
+    });
+    const totalCredits = rows.reduce((s, r) => s + r.credit, 0);
+    const totalDebits = rows.reduce((s, r) => s + r.debit, 0);
+    return { rows, totalCredits, totalDebits };
+  })();
+
+  // ── Complete Revenue / Wallet transaction ledger (derived, read-only) ──
+  // Replays each user's existing wallet transactions (already fetched via
+  // the unchanged /admin/wallets/ endpoint) in chronological order per
+  // wallet to compute "Balance After Transaction" for display — the stored
+  // wallet.balance value itself (set by the existing backend logic) is
+  // never recalculated or altered here.
+  const revenueLedger = (() => {
+    const rows = [];
+    wallets.forEach(w => {
+      let running = 0;
+      const sorted = [...(w.transactions || [])].sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+      sorted.forEach(t => {
+        const amt = parseFloat(t.amount);
+        running += t.transaction_type === 'CREDIT' ? amt : -amt;
+        rows.push({
+          user: w.username,
+          date: t.created_at,
+          type: t.transaction_type,
+          credit: t.transaction_type === 'CREDIT' ? amt : 0,
+          debit: t.transaction_type === 'DEBIT' ? amt : 0,
+          balanceAfter: running,
+          ref_id: t.ref_id,
+          description: t.description,
+        });
+      });
+    });
+    rows.sort((a, b) => new Date(b.date) - new Date(a.date)); // most recent first
+    return rows;
+  })();
+
+  // ── Filtered views used by the clickable summary cards ─────────────────
+  // Pure presentational filters over the already-fetched arrays — the
+  // underlying data/tables/business logic are unchanged.
+  const filteredUsers = userRoleFilter === 'ALL'
+    ? users
+    : userRoleFilter === 'SELLER_BUYER'
+    ? users.filter(u => u.role === 'SELLER' || u.role === 'BUYER')
+    : users.filter(u => u.role === userRoleFilter);
+
+  const filteredProducts = productStatusFilter === 'ALL'
+    ? products
+    : products.filter(p => p.status === productStatusFilter);
+
+  const filteredBids = bidsViewFilter === 'ALL'
+    ? bids
+    : bids.filter(b => b.is_winning_bid);
+
+  const filteredWithdrawals = withdrawalStatusFilter === 'ALL'
+    ? withdrawals
+    : withdrawals.filter(w => w.status === withdrawalStatusFilter);
+
   const tabs = [
     { key: 'overview', icon: 'bi-bar-chart', label: 'Overview' },
     { key: 'users', icon: 'bi-people', label: `Users (${stats.users})` },
@@ -189,18 +311,43 @@ const AdminDashboard = () => {
       </div>
 
       <div className="container py-4">
-        {/* Stats */}
+        {/* Stats — now clickable shortcuts to their corresponding admin section */}
         <div className="row g-3 mb-4">
           {[
-            { label: 'Total Users', val: stats.users, icon: 'bi-people-fill', color: '#0f3460' },
-            { label: 'Active Auctions', val: stats.activeAuctions, icon: 'bi-lightning-fill', color: '#e94560' },
-            { label: 'Total Bids', val: stats.totalBids, icon: 'bi-graph-up', color: '#6f42c1' },
-            { label: 'Revenue (₹)', val: stats.revenue.toLocaleString(), icon: 'bi-currency-rupee', color: '#28a745' },
-            { label: 'Company Wallet', val: `₹${stats.companyBalance.toLocaleString()}`, icon: 'bi-building', color: '#fd7e14' },
-            { label: 'Pending Withdrawals', val: stats.pendingWithdrawals, icon: 'bi-hourglass-split', color: '#dc3545' },
+            {
+              label: 'Total Users', val: stats.users, icon: 'bi-people-fill', color: '#0f3460',
+              onClick: () => goToCard('users', { userRole: 'SELLER_BUYER' }),
+            },
+            {
+              label: 'Active Auctions', val: stats.activeAuctions, icon: 'bi-lightning-fill', color: '#e94560',
+              onClick: () => goToCard('products', { productStatus: 'ACTIVE' }),
+            },
+            {
+              label: 'Total Bids', val: stats.totalBids, icon: 'bi-graph-up', color: '#6f42c1',
+              onClick: () => goToCard('bids', { bidsView: 'WINNING' }),
+            },
+            {
+              label: 'Revenue (₹)', val: stats.revenue.toLocaleString(), icon: 'bi-currency-rupee', color: '#28a745',
+              onClick: () => goToCard('payments'),
+            },
+            {
+              label: 'Company Wallet', val: `₹${stats.companyBalance.toLocaleString()}`, icon: 'bi-building', color: '#fd7e14',
+              onClick: () => { setShowCompanyWalletPage(true); requestAnimationFrame(() => tabPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })); },
+            },
+            {
+              label: 'Pending Withdrawals', val: stats.pendingWithdrawals, icon: 'bi-hourglass-split', color: '#dc3545',
+              onClick: () => goToCard('withdrawals', { withdrawalStatus: 'PENDING' }),
+            },
           ].map((s, i) => (
             <div key={i} className="col-6 col-lg-2 col-md-4">
-              <div className="card border-0 shadow-sm text-center p-3" style={{ borderRadius: '12px' }}>
+              <div
+                className="card border-0 shadow-sm text-center p-3"
+                style={{ borderRadius: '12px', cursor: 'pointer' }}
+                role="button"
+                tabIndex={0}
+                title={`View ${s.label}`}
+                onClick={s.onClick}
+                onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') s.onClick(); }}>
                 <i className={`bi ${s.icon} fs-2 mb-1`} style={{ color: s.color }}></i>
                 <h5 className="fw-bold mb-0">{s.val}</h5>
                 <small className="text-muted">{s.label}</small>
@@ -211,14 +358,14 @@ const AdminDashboard = () => {
 
         {msg.text && <div className={`alert alert-${msg.type} mb-3`}>{msg.text}</div>}
 
-        <div className="card border-0 shadow-sm" style={{ borderRadius: '12px' }}>
+        <div ref={tabPanelRef} className="card border-0 shadow-sm" style={{ borderRadius: '12px' }}>
           <div className="card-header bg-white border-0 p-3">
             <ul className="nav nav-pills flex-wrap gap-1">
               {tabs.map(t => (
                 <li key={t.key} className="nav-item">
-                  <button className={`nav-link ${activeTab === t.key ? 'active' : ''}`}
-                    style={activeTab === t.key ? { backgroundColor: '#e94560' } : {}}
-                    onClick={() => setActiveTab(t.key)}>
+                  <button className={`nav-link ${activeTab === t.key && !showCompanyWalletPage ? 'active' : ''}`}
+                    style={activeTab === t.key && !showCompanyWalletPage ? { backgroundColor: '#e94560' } : {}}
+                    onClick={() => { setShowCompanyWalletPage(false); setActiveTab(t.key); }}>
                     <i className={`bi ${t.icon} me-1`}></i>{t.label}
                   </button>
                 </li>
@@ -229,6 +376,75 @@ const AdminDashboard = () => {
           <div className="card-body p-0">
             {loading ? (
               <div className="text-center py-5"><div className="spinner-border" style={{ color: '#e94560' }}></div></div>
+            ) : showCompanyWalletPage ? (
+              <div className="p-4">
+                <div className="d-flex justify-content-between align-items-center mb-3">
+                  <h5 className="fw-bold mb-0"><i className="bi bi-building me-2" style={{ color: '#fd7e14' }}></i>Company Wallet Details</h5>
+                  <button className="btn btn-sm btn-outline-secondary" onClick={() => setShowCompanyWalletPage(false)}>
+                    <i className="bi bi-arrow-left me-1"></i>Back to Dashboard
+                  </button>
+                </div>
+
+                <div className="row g-3 mb-4">
+                  <div className="col-md-4">
+                    <div className="p-3 rounded-3 h-100" style={{ background: 'linear-gradient(135deg,#1a1a2e,#0f3460)', color: '#fff' }}>
+                      <small className="opacity-75">Current Wallet Balance</small>
+                      <h3 className="fw-bold mb-0" style={{ color: '#4caf50' }}>₹{stats.companyBalance.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</h3>
+                    </div>
+                  </div>
+                  <div className="col-md-4">
+                    <div className="p-3 rounded-3 h-100 bg-light">
+                      <small className="text-muted">Total Credits</small>
+                      <h3 className="fw-bold mb-0 text-success">₹{companyWalletLedger.totalCredits.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</h3>
+                    </div>
+                  </div>
+                  <div className="col-md-4">
+                    <div className="p-3 rounded-3 h-100 bg-light">
+                      <small className="text-muted">Total Debits</small>
+                      <h3 className="fw-bold mb-0 text-danger">₹{companyWalletLedger.totalDebits.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</h3>
+                    </div>
+                  </div>
+                </div>
+
+                <h6 className="fw-bold mb-2">Complete Wallet Transaction History</h6>
+                <div className="table-responsive">
+                  <table className="table table-hover mb-0">
+                    <thead className="table-light">
+                      <tr>
+                        <th>Transaction Date</th>
+                        <th>Transaction Type</th>
+                        <th>Credit Amount</th>
+                        <th>Debit Amount</th>
+                        <th>Balance After Transaction</th>
+                        <th>Reference Auction</th>
+                        <th>Reference User</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {companyWalletLedger.rows.length === 0
+                        ? <tr><td colSpan="7" className="text-center py-4 text-muted">No company wallet transactions yet.</td></tr>
+                        : companyWalletLedger.rows.map((r, idx) => (
+                          <tr key={idx}>
+                            <td><small>{r.date ? new Date(r.date).toLocaleString() : '-'}</small></td>
+                            <td>
+                              <span className={`badge ${r.credit > 0 ? 'bg-success' : 'bg-danger'}`}>{r.type}</span>
+                            </td>
+                            <td className="text-success fw-semibold">{r.credit > 0 ? `+₹${r.credit.toLocaleString('en-IN', { minimumFractionDigits: 2 })}` : '-'}</td>
+                            <td className="text-danger fw-semibold">{r.debit > 0 ? `-₹${r.debit.toLocaleString('en-IN', { minimumFractionDigits: 2 })}` : '-'}</td>
+                            <td className="fw-bold">₹{r.balanceAfter.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
+                            <td><small>{r.reference_auction || '-'}</small></td>
+                            <td><small>{r.reference_user || '-'}</small></td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="text-muted small mt-3 mb-0">
+                  Includes listing fee credits and 2.5% listing-fee refund debits — the two transaction
+                  types currently recorded against the company wallet. Seller withdrawal approvals and
+                  winner payments are settled directly to seller wallets and do not move this balance.
+                </p>
+              </div>
             ) : (
               <>
                 {/* Overview Tab */}
@@ -277,13 +493,28 @@ const AdminDashboard = () => {
 
                 {/* Users Tab */}
                 {activeTab === 'users' && (
-                  <div className="table-responsive">
+                  <div>
+                    <div className="d-flex gap-2 p-3 pb-0">
+                      {[
+                        { key: 'ALL', label: 'All' },
+                        { key: 'SELLER_BUYER', label: 'Sellers & Buyers' },
+                        { key: 'SELLER', label: 'Sellers' },
+                        { key: 'BUYER', label: 'Buyers' },
+                      ].map(f => (
+                        <button key={f.key}
+                          className={`btn btn-sm ${userRoleFilter === f.key ? 'btn-dark' : 'btn-outline-secondary'}`}
+                          onClick={() => setUserRoleFilter(f.key)}>
+                          {f.label}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="table-responsive">
                     <table className="table table-hover mb-0">
                       <thead className="table-light">
                         <tr><th>User</th><th>Email</th><th>Role</th><th>Joined</th><th>Status</th><th>Action</th></tr>
                       </thead>
                       <tbody>
-                        {users.map(u => (
+                        {filteredUsers.map(u => (
                           <tr key={u.id}>
                             <td>
                               <div className="fw-semibold">{u.first_name} {u.last_name}</div>
@@ -313,18 +544,29 @@ const AdminDashboard = () => {
                         ))}
                       </tbody>
                     </table>
+                    </div>
                   </div>
                 )}
 
                 {/* Products Tab */}
                 {activeTab === 'products' && (
-                  <div className="table-responsive">
+                  <div>
+                    <div className="d-flex gap-2 p-3 pb-0">
+                      {['ALL', 'PENDING', 'ACTIVE', 'CLOSED', 'CANCELLED'].map(f => (
+                        <button key={f}
+                          className={`btn btn-sm ${productStatusFilter === f ? 'btn-dark' : 'btn-outline-secondary'}`}
+                          onClick={() => setProductStatusFilter(f)}>
+                          {f === 'ALL' ? 'All' : f}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="table-responsive">
                     <table className="table table-hover mb-0">
                       <thead className="table-light">
                         <tr><th>Product</th><th>Seller</th><th>Starting</th><th>Current</th><th>Status</th><th>Action</th></tr>
                       </thead>
                       <tbody>
-                        {products.map(p => (
+                        {filteredProducts.map(p => (
                           <tr key={p.id}>
                             <td className="fw-semibold">{p.title}</td>
                             <td><small>{p.seller_name}</small></td>
@@ -351,18 +593,32 @@ const AdminDashboard = () => {
                         ))}
                       </tbody>
                     </table>
+                    </div>
                   </div>
                 )}
 
                 {/* Bids Tab */}
                 {activeTab === 'bids' && (
-                  <div className="table-responsive">
+                  <div>
+                    <div className="d-flex gap-2 p-3 pb-0">
+                      {[
+                        { key: 'ALL', label: 'All Bids' },
+                        { key: 'WINNING', label: 'Highest Bid Per Product' },
+                      ].map(f => (
+                        <button key={f.key}
+                          className={`btn btn-sm ${bidsViewFilter === f.key ? 'btn-dark' : 'btn-outline-secondary'}`}
+                          onClick={() => setBidsViewFilter(f.key)}>
+                          {f.label}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="table-responsive">
                     <table className="table table-hover mb-0">
                       <thead className="table-light">
                         <tr><th>Bidder</th><th>Product</th><th>Amount</th><th>Status</th><th>Time</th></tr>
                       </thead>
                       <tbody>
-                        {bids.map(bid => (
+                        {filteredBids.map(bid => (
                           <tr key={bid.id}>
                             <td className="fw-semibold">{bid.bidder_name}</td>
                             <td>{bid.product_title}</td>
@@ -373,11 +629,13 @@ const AdminDashboard = () => {
                         ))}
                       </tbody>
                     </table>
+                    </div>
                   </div>
                 )}
 
                 {/* Payments Tab */}
                 {activeTab === 'payments' && (
+                  <div>
                   <div className="table-responsive">
                     <table className="table table-hover mb-0">
                       <thead className="table-light">
@@ -438,6 +696,42 @@ const AdminDashboard = () => {
                       </tbody>
                     </table>
                   </div>
+
+                  <div className="p-3 border-top">
+                    <h6 className="fw-bold mb-2"><i className="bi bi-cash-stack me-2"></i>Complete Revenue History — All Wallet Credits &amp; Debits</h6>
+                    <p className="text-muted small mb-2">Every credit/debit across all user wallets, with the running balance after each transaction.</p>
+                    <div className="table-responsive">
+                      <table className="table table-sm table-hover mb-0">
+                        <thead className="table-light">
+                          <tr>
+                            <th>Date/Time</th>
+                            <th>User</th>
+                            <th>Type</th>
+                            <th>Transaction Ref</th>
+                            <th>Credit</th>
+                            <th>Debit</th>
+                            <th>Balance After Transaction</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {revenueLedger.length === 0
+                            ? <tr><td colSpan="7" className="text-center py-3 text-muted">No wallet transactions yet.</td></tr>
+                            : revenueLedger.map((r, idx) => (
+                              <tr key={idx}>
+                                <td><small>{new Date(r.date).toLocaleString()}</small></td>
+                                <td className="fw-semibold"><small>{r.user}</small></td>
+                                <td><span className={`badge ${r.type === 'CREDIT' ? 'bg-success' : 'bg-danger'}`}>{r.type}</span></td>
+                                <td><code className="small">{r.ref_id || '-'}</code></td>
+                                <td className="text-success fw-semibold">{r.credit > 0 ? `+₹${r.credit.toLocaleString('en-IN', { minimumFractionDigits: 2 })}` : '-'}</td>
+                                <td className="text-danger fw-semibold">{r.debit > 0 ? `-₹${r.debit.toLocaleString('en-IN', { minimumFractionDigits: 2 })}` : '-'}</td>
+                                <td className="fw-bold">₹{r.balanceAfter.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
+                              </tr>
+                            ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                  </div>
                 )}
 
                 {/* Wallets Tab */}
@@ -479,15 +773,25 @@ const AdminDashboard = () => {
 
                 {/* Withdrawals Tab */}
                 {activeTab === 'withdrawals' && (
-                  <div className="table-responsive">
+                  <div>
+                    <div className="d-flex gap-2 p-3 pb-0">
+                      {['ALL', 'PENDING', 'APPROVED', 'REJECTED'].map(f => (
+                        <button key={f}
+                          className={`btn btn-sm ${withdrawalStatusFilter === f ? 'btn-dark' : 'btn-outline-secondary'}`}
+                          onClick={() => setWithdrawalStatusFilter(f)}>
+                          {f === 'ALL' ? 'All' : f}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="table-responsive">
                     <table className="table table-hover mb-0">
                       <thead className="table-light">
                         <tr><th>User</th><th>Amount</th><th>UPI ID</th><th>Requested</th><th>Status</th><th>Action</th></tr>
                       </thead>
                       <tbody>
-                        {withdrawals.length === 0
+                        {filteredWithdrawals.length === 0
                           ? <tr><td colSpan="6" className="text-center py-4 text-muted">No withdrawal requests.</td></tr>
-                          : withdrawals.map(w => (
+                          : filteredWithdrawals.map(w => (
                             <tr key={w.id}>
                               <td className="fw-semibold">{w.username}</td>
                               <td className="fw-bold text-primary">₹{parseFloat(w.amount).toLocaleString()}</td>
@@ -516,6 +820,7 @@ const AdminDashboard = () => {
                           ))}
                       </tbody>
                     </table>
+                    </div>
                   </div>
                 )}
 
