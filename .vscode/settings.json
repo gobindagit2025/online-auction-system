@@ -1,16 +1,21 @@
 {
     "cSpell.words": [
+        "corsheaders",
         "createsuperuser",
+        "djangorestframework",
         "Gobinda",
         "gunicorn",
+        "Kolkata",
         "makemigrations",
         "nums",
         "otps",
         "Paytm",
         "runserver",
+        "simplejwt",
         "txns",
         "VARCHAR",
         "venv",
+        "whitenoise",
         "wsgi",
         "XAMPP"
     ]
