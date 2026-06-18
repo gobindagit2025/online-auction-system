@@ -721,4 +721,8 @@ python manage.py migrate payments
 ```bash
 python manage.py migrate products
 python manage.py migrate payments
+<<<<<<< HEAD
 ```
+=======
+```
+>>>>>>> 0fdb37179e2ededef66f0188c55bfe97fc7999fd
