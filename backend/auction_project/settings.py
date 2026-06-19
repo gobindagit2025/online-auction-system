@@ -19,7 +19,7 @@ SECRET_KEY = os.environ.get(
     'django-insecure-auction-system-secret-key-change-in-production-xyz123'
 )
 
-DEBUG = os.environ.get('DEBUG', 'False') == 'True'
+DEBUG = os.environ.get('DEBUG', 'False') == 'False'
 
 ALLOWED_HOSTS = ['*']  # Restrict in production
 
