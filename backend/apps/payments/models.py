@@ -199,7 +199,18 @@ class Payment(models.Model):
         WALLET      = 'WALLET',      'BidZone Wallet'
 
     buyer          = models.ForeignKey(User, on_delete=models.CASCADE, related_name='payments')
-    product        = models.OneToOneField(Product, on_delete=models.CASCADE, related_name='payment')
+    # NOTE: This was previously a OneToOneField, which put a DB-level UNIQUE
+    # constraint on product_id — meaning a SECOND Payment row could never be
+    # created for a product that already had one. That silently made the
+    # Winner Payment Expiry / Bidder Shift Logic impossible at the schema
+    # level: the moment a 2nd/3rd/4th bidder needed their own 24h countdown
+    # Payment row, Payment.objects.create(product=...) would raise an
+    # IntegrityError. This is the actual root cause of bidders never
+    # inheriting the win. ForeignKey is the minimal fix: it only removes a
+    # constraint (no data loss, no column type change), every existing
+    # one-payment-per-product row remains perfectly valid, and no other
+    # code anywhere reads the removed singular reverse accessor.
+    product        = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='payment')
     winning_bid    = models.OneToOneField(Bid, on_delete=models.CASCADE, related_name='payment')
     amount         = models.DecimalField(max_digits=12, decimal_places=2)
     status         = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING)
@@ -232,6 +243,22 @@ class Payment(models.Model):
         if self.payment_deadline:
             return timezone.now() > self.payment_deadline
         return False
+
+    @property
+    def winner_position(self):
+        """
+        1 = original highest bidder, 2 = the bidder who was promoted after
+        the 1st winner's payment expired, 3 = after the 2nd also expired,
+        and so on. Purely derived from how many earlier winners have
+        already expired for this product — never stored as a column, so
+        it can never drift out of sync with the actual shift history.
+        """
+        prior_expired = Payment.objects.filter(
+            product=self.product,
+            status=Payment.Status.EXPIRED,
+            created_at__lt=self.created_at,
+        ).count()
+        return prior_expired + 1
 
 
 # ─────────────────────────────────────────────────────────

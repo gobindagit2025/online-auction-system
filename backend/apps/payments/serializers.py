@@ -9,7 +9,10 @@ Full real payment system:
 
 import re
 import uuid
+import logging
 from decimal import Decimal
+from django.conf import settings
+from django.core.mail import send_mail
 from django.utils import timezone
 from rest_framework import serializers
 
@@ -20,6 +23,9 @@ from .models import (
 )
 from apps.bids.models import Bid
 from apps.products.models import Product
+from apps.users.models import User
+
+logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────────────────
@@ -115,14 +121,19 @@ def sweep_closed_auctions_and_start_countdowns():
     """
     Find any ACTIVE auctions whose end time has passed, flip them to
     CLOSED, and immediately start the winner's 24h payment countdown for
-    each one via ensure_payment_countdown().
+    each one via ensure_payment_countdown(). Then process any winner
+    payment deadlines that have already expired (see
+    process_expired_winner_payments()) so the auto-shift-to-next-bidder
+    logic runs on every request that touches this lazy sweep — not just
+    when a buyer/admin happens to open the specific expired product.
 
     This mirrors the existing lazy status-update pattern already used by
     ProductListView.get_queryset() (Product.update_status / bulk update),
     so calling it from a payments view does not introduce a new auction
-    "closing" mechanism — it only ensures the countdown is started as soon
-    as any request touches closed/about-to-close auctions, regardless of
-    which page the buyer/admin happens to load first.
+    "closing" mechanism — it only ensures the countdown is started (and now
+    also auto-expired/shifted) as soon as any request touches the
+    relevant endpoints, regardless of which page the buyer/admin/seller
+    happens to load first.
     """
     now = timezone.now()
     newly_closing_ids = list(
@@ -141,6 +152,15 @@ def sweep_closed_auctions_and_start_countdowns():
     # restricted to products with no Payment row yet, so this stays cheap.
     for closed_product in Product.objects.filter(status=Product.Status.CLOSED, payment__isnull=True):
         ensure_payment_countdown(closed_product)
+
+    # Winner Payment Expiry / Bidder Shift Logic fix: actually run the
+    # auto-expire-and-shift sweep here too, so it happens automatically on
+    # every request that hits any of these common endpoints (product
+    # list, buyer "my payments", payment detail, admin payment list) —
+    # not only when someone happens to open the exact expired product's
+    # payment page. See process_expired_winner_payments() for the
+    # cron/management-command-friendly version of the same sweep.
+    process_expired_winner_payments()
 
 
 def ensure_payment_countdown(product):
@@ -194,55 +214,222 @@ def ensure_payment_countdown(product):
     )
 
 
-def _expire_and_shift(product, payment=None):
+def _admin_emails():
+    return list(
+        User.objects.filter(role=User.Role.ADMIN)
+        .exclude(email='')
+        .values_list('email', flat=True)
+    )
+
+
+def _safe_send_mail(subject, message, recipient_list):
+    """Never let a notification failure break the winner-shift transaction."""
+    recipient_list = [r for r in recipient_list if r]
+    if not recipient_list:
+        return
+    try:
+        send_mail(
+            subject=subject,
+            message=message,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=recipient_list,
+            fail_silently=True,
+        )
+    except Exception:
+        logger.exception("Winner-shift notification email failed to send.")
+
+
+def _notify_winner_shift(product, disqualified_user, new_payment):
     """
-    Mark current winning bid/payment as expired, shift win to next highest bidder.
-    Creates a fresh PENDING Payment record for the next bidder with a new 24h countdown.
-    If no bidders remain, marks product as unsold (status stays CLOSED, no new payment).
+    Notify: New winner, Seller, Admin — after the win has shifted to the
+    next highest bidder. Scheduled to fire only after the DB transaction
+    actually commits, so nobody is notified about a shift that gets
+    rolled back.
+    """
+    from django.db import transaction as db_transaction
+
+    new_winner = new_payment.buyer
+    seller = product.seller
+
+    def _send():
+        _safe_send_mail(
+            subject=f"BidZone – You're now the winning bidder for '{product.title}'",
+            message=(
+                f"Hello {new_winner.first_name or new_winner.username},\n\n"
+                f"The previous winning bidder for '{product.title}' missed their "
+                f"24-hour payment deadline and has been disqualified.\n\n"
+                f"You are now the winning bidder at ₹{new_payment.amount}.\n"
+                f"Please complete payment before "
+                f"{new_payment.payment_deadline.strftime('%d %b %Y, %I:%M %p')} "
+                f"or the win will shift to the next highest bidder.\n\n"
+                f"– BidZone Team"
+            ),
+            recipient_list=[new_winner.email],
+        )
+        _safe_send_mail(
+            subject=f"BidZone – Winning bidder changed for '{product.title}'",
+            message=(
+                f"Hello {seller.first_name or seller.username},\n\n"
+                f"The previous winning bidder for '{product.title}' "
+                f"({disqualified_user.username if disqualified_user else 'previous winner'}) missed the "
+                f"24-hour payment deadline and was disqualified.\n\n"
+                f"The win has shifted to {new_winner.username} for ₹{new_payment.amount}. "
+                f"A new 24-hour payment countdown has started for them.\n\n"
+                f"– BidZone Team"
+            ),
+            recipient_list=[seller.email],
+        )
+        _safe_send_mail(
+            subject=f"BidZone Admin – Winner shifted for '{product.title}'",
+            message=(
+                f"Auction: {product.title} (ID {product.id})\n"
+                f"Previous winner disqualified: {disqualified_user.username if disqualified_user else 'N/A'} "
+                f"(payment expired)\n"
+                f"New winner: {new_winner.username} — ₹{new_payment.amount}\n"
+                f"Shift time: {timezone.now().strftime('%d %b %Y, %I:%M %p')}\n"
+                f"New payment deadline: {new_payment.payment_deadline.strftime('%d %b %Y, %I:%M %p')}\n"
+            ),
+            recipient_list=_admin_emails(),
+        )
+
+    db_transaction.on_commit(_send)
+
+
+def _notify_unsold(product, last_disqualified_user):
+    """Notify: Seller (and Admin) — every eligible bidder has expired, auction is UNSOLD."""
+    from django.db import transaction as db_transaction
+
+    seller = product.seller
+
+    def _send():
+        _safe_send_mail(
+            subject=f"BidZone – '{product.title}' could not be sold",
+            message=(
+                f"Hello {seller.first_name or seller.username},\n\n"
+                f"Every bidder on '{product.title}' missed their 24-hour payment "
+                f"deadline, so the auction has been marked UNSOLD and all "
+                f"countdowns have been stopped.\n\n"
+                f"– BidZone Team"
+            ),
+            recipient_list=[seller.email],
+        )
+        _safe_send_mail(
+            subject=f"BidZone Admin – '{product.title}' marked UNSOLD",
+            message=(
+                f"Auction: {product.title} (ID {product.id})\n"
+                f"Last disqualified bidder: "
+                f"{last_disqualified_user.username if last_disqualified_user else 'N/A'}\n"
+                f"No eligible bidders remain — auction marked UNSOLD at "
+                f"{timezone.now().strftime('%d %b %Y, %I:%M %p')}.\n"
+            ),
+            recipient_list=_admin_emails(),
+        )
+
+    db_transaction.on_commit(_send)
+
+
+def _expire_and_shift(product):
+    """
+    Core Winner Payment Expiry / Bidder Shift Logic.
+
+    Whatever the *current* PENDING winner payment for `product` is (re-resolved
+    fresh from the DB under a row lock — any payment object a caller already
+    holds is ignored on purpose, since it may be stale), if its 24-hour
+    deadline has passed:
+      1. Mark it EXPIRED ("Payment Expired / Disqualified / Not Eligible").
+      2. Drop that bidder's bid from is_winning_bid.
+      3. Pick the next highest bidder, excluding the bidder just disqualified
+         and every bidder who has ever expired a payment on this product
+         (so a bidder can never be restarted or win twice).
+      4. Promote them and open a brand-new 24-hour countdown
+         (current_winner / payment_deadline / countdown_start / payment_status
+         all updated together on the new Payment row).
+      5. Notify the new winner, the seller, and admins.
+    If no eligible bidder remains, the product is marked UNSOLD, the seller
+    is notified, and no new countdown is created (all countdowns stop).
+
+    Race-condition safety: the Product row is locked with select_for_update()
+    for the whole operation, so two concurrent calls for the same product
+    (e.g. the cron sweep firing at the same moment a buyer's page polls
+    check-deadline/winner-countdown) can never both process the same
+    expiry — the second call simply finds the payment already shifted (no
+    longer PENDING, or deadline no longer "passed") and is a safe no-op.
+    Never creates a duplicate winner; never skips a higher bidder, since the
+    next bidder is always chosen by ordering every still-eligible bid by
+    amount, highest first.
+
+    Returns the newly-created Payment for the promoted bidder, or None if
+    nothing was shifted (already handled / nothing pending / no eligible
+    bidder left).
     """
     from django.db import transaction as db_transaction
 
     with db_transaction.atomic():
-        # Expire current payment
-        if payment:
-            payment.status = Payment.Status.EXPIRED
-            payment.save(update_fields=['status'])
+        # Lock the product row so only one process can ever shift the
+        # winner for this auction at the same time.
+        locked_product = Product.objects.select_for_update().get(pk=product.pk)
 
-        # Disqualify current winner bid
-        current_winner_bid = Bid.objects.filter(product=product, is_winning_bid=True).first()
-        if not current_winner_bid:
-            return  # Nothing to shift
+        # Always re-resolve the *current* pending payment under the lock —
+        # never trust a Payment object a caller fetched before the lock,
+        # since a concurrent request may have already expired/shifted it.
+        current_payment = (
+            Payment.objects
+            .select_for_update()
+            .filter(product=locked_product, status=Payment.Status.PENDING)
+            .order_by('-created_at')
+            .first()
+        )
 
-        disqualified_bidder = current_winner_bid.bidder
-        current_winner_bid.is_winning_bid = False
-        current_winner_bid.save(update_fields=['is_winning_bid'])
+        if current_payment is None:
+            return None  # Already shifted/paid by someone else, or no winner yet
 
-        # Find next highest bidder (exclude all bidders who already have an EXPIRED payment)
-        expired_bidder_ids = Payment.objects.filter(
-            product=product, status=Payment.Status.EXPIRED
-        ).values_list('buyer_id', flat=True)
+        if not current_payment.is_deadline_passed:
+            return None  # Deadline genuinely hasn't passed — nothing to do yet
 
-        next_bid = Bid.objects.filter(
-            product=product,
-            is_winning_bid=False,
-        ).exclude(
-            bidder_id__in=expired_bidder_ids
-        ).exclude(
-            bidder=disqualified_bidder
-        ).order_by('-amount').first()
+        # ── 1. Mark current winner: Payment Expired / Disqualified / Not Eligible ──
+        disqualified_user = current_payment.buyer
+        current_payment.status = Payment.Status.EXPIRED
+        current_payment.save(update_fields=['status'])
+
+        current_winner_bid = Bid.objects.select_for_update().filter(
+            product=locked_product, is_winning_bid=True
+        ).first()
+        if current_winner_bid:
+            current_winner_bid.is_winning_bid = False
+            current_winner_bid.save(update_fields=['is_winning_bid'])
+
+        # ── 2. Find next highest valid bidder ──
+        # Exclude the bidder just disqualified *and* every bidder who has
+        # ever expired a payment on this product — never restart a
+        # countdown for an already-expired bidder, and never let them win
+        # a second time via a later, lower bid.
+        excluded_bidder_ids = set(
+            Payment.objects.filter(
+                product=locked_product, status=Payment.Status.EXPIRED
+            ).values_list('buyer_id', flat=True)
+        )
+        excluded_bidder_ids.add(disqualified_user.id)
+
+        next_bid = (
+            Bid.objects.filter(product=locked_product)
+            .exclude(bidder_id__in=excluded_bidder_ids)
+            .order_by('-amount', 'placed_at')
+            .first()
+        )
 
         if next_bid:
-            # Promote next bidder to winner
+            # ── 3. Transfer winning status to the next highest bidder ──
             next_bid.is_winning_bid = True
             next_bid.save(update_fields=['is_winning_bid'])
-            product.current_highest_bid = next_bid.amount
-            product.save(update_fields=['current_highest_bid'])
 
-            # Create a fresh 24-hour Payment record for next winner
+            locked_product.current_highest_bid = next_bid.amount
+            locked_product.save(update_fields=['current_highest_bid'])
+
+            # ── 4. New 24-hour countdown for the new winner ──
             now = timezone.now()
-            Payment.objects.create(
+            new_payment = Payment.objects.create(
                 buyer            = next_bid.bidder,
-                product          = product,
+                product          = locked_product,
                 winning_bid      = next_bid,
                 amount           = next_bid.amount,
                 status           = Payment.Status.PENDING,
@@ -250,11 +437,78 @@ def _expire_and_shift(product, payment=None):
                 countdown_start  = now,
                 payment_deadline = now + timezone.timedelta(hours=24),
             )
+
+            # ── 5. Notify new winner, seller, admin ──
+            _notify_winner_shift(locked_product, disqualified_user, new_payment)
+            return new_payment
         else:
-            # No more valid bidders — auction is truly unsold
-            # Leave product as CLOSED with no active winner
-            product.current_highest_bid = None
-            product.save(update_fields=['current_highest_bid'])
+            # No eligible bidders remain — auction is genuinely UNSOLD.
+            # Stop all countdowns (no new Payment row is created).
+            locked_product.current_highest_bid = None
+            locked_product.status = Product.Status.UNSOLD
+            locked_product.save(update_fields=['current_highest_bid', 'status'])
+            _notify_unsold(locked_product, disqualified_user)
+            return None
+
+
+def process_expired_winner_payments():
+    """
+    Background-processing entry point for the Winner Payment Expiry /
+    Bidder Shift Logic. Sweeps EVERY product with a PENDING winner payment
+    whose deadline has passed and shifts to the next eligible bidder,
+    cascading through as many levels as needed in one pass (2nd bidder
+    fails -> 3rd, 3rd fails -> 4th, …) until a still-active countdown is
+    found or no eligible bidders remain (UNSOLD).
+
+    This is intentionally a plain, idempotent, DB-driven function (no
+    in-memory state) so it behaves correctly:
+      - Called from sweep_closed_auctions_and_start_countdowns(), which
+        already runs on nearly every common request (product list, buyer
+        "my payments", payment detail, admin payment list) — so the shift
+        happens automatically without requiring the affected buyer/seller
+        to take any action.
+      - Called from the `process_payment_expiry` management command (see
+        apps/payments/management/commands/process_payment_expiry.py),
+        which can be wired into an OS cron job / Celery beat schedule for
+        true background processing.
+      - Safe to run again immediately after a server restart: it only
+        ever reads/writes the database, never relies on anything held in
+        memory, so a multi-day outage is simply caught up in one pass the
+        next time it runs (each cascade level is processed in the same
+        sweep since the "while" loop below keeps shifting while the new
+        current payment is *also* already past its deadline).
+    """
+    expired_product_ids = list(
+        Payment.objects.filter(
+            status=Payment.Status.PENDING,
+            payment_deadline__lt=timezone.now(),
+        ).values_list('product_id', flat=True).distinct()
+    )
+
+    shifted_count = 0
+    unsold_count = 0
+
+    for product_id in expired_product_ids:
+        try:
+            product = Product.objects.get(pk=product_id)
+        except Product.DoesNotExist:
+            continue
+
+        # Cascade through multiple levels in one pass, in case several
+        # 24h windows have already elapsed back-to-back (e.g. the server
+        # was down for a while). Capped only as a sanity safety net.
+        for _ in range(100):
+            result = _expire_and_shift(product)
+            if result is None:
+                break
+            shifted_count += 1
+            if not result.is_deadline_passed:
+                break
+
+        if Product.objects.filter(pk=product_id, status=Product.Status.UNSOLD).exists():
+            unsold_count += 1
+
+    return {'shifted': shifted_count, 'unsold': unsold_count}
 
 
 class InitiatePaymentSerializer(serializers.Serializer):
@@ -291,9 +545,20 @@ class InitiatePaymentSerializer(serializers.Serializer):
         if existing and existing.status == Payment.Status.COMPLETED:
             raise serializers.ValidationError("Payment already completed for this product.")
 
-        deadline = product.auction_end_time + timezone.timedelta(hours=24)
+        # Always trust the real Payment row's own countdown/deadline if one
+        # already exists — it may have been (re)started at shift time by
+        # _expire_and_shift, which is later than auction_end_time once a
+        # winner shift has happened. Only fall back to computing a fresh
+        # auction_end_time + 24h deadline when no countdown exists yet.
+        if existing and existing.payment_deadline:
+            countdown_start = existing.countdown_start or product.auction_end_time
+            deadline = existing.payment_deadline
+        else:
+            countdown_start = product.auction_end_time
+            deadline = countdown_start + timezone.timedelta(hours=24)
+
         if timezone.now() > deadline:
-            _expire_and_shift(product, existing)
+            _expire_and_shift(product)
             raise serializers.ValidationError(
                 "24-hour payment window has passed. Auction shifted to next highest bidder."
             )
@@ -301,16 +566,16 @@ class InitiatePaymentSerializer(serializers.Serializer):
         if method == 'UPI' and not upi_id:
             raise serializers.ValidationError({"upi_id": "UPI ID is required for UPI payment."})
 
-        attrs['product']     = product
-        attrs['winning_bid'] = winning_bid
-        attrs['deadline']    = deadline
+        attrs['product']         = product
+        attrs['winning_bid']     = winning_bid
+        attrs['deadline']        = deadline
+        attrs['countdown_start'] = countdown_start
         return attrs
 
     def create(self, validated_data):
         buyer       = self.context['request'].user
         product     = validated_data['product']
         winning_bid = validated_data['winning_bid']
-        now         = timezone.now()
 
         # Re-use existing PENDING payment if already created (e.g. page refresh)
         existing = Payment.objects.filter(
@@ -336,7 +601,7 @@ class InitiatePaymentSerializer(serializers.Serializer):
             card_last4       = validated_data.get('card_last4', ''),
             status           = Payment.Status.PENDING,
             transaction_id   = f"TXN-{uuid.uuid4().hex[:12].upper()}",
-            countdown_start  = product.auction_end_time,  # countdown begins at auction close
+            countdown_start  = validated_data['countdown_start'],
             payment_deadline = validated_data['deadline'],
         )
         if validated_data['payment_method'] == 'QR_CODE':
@@ -357,19 +622,23 @@ class CompletePaymentSerializer(serializers.Serializer):
         if payment.status != Payment.Status.PENDING:
             raise serializers.ValidationError(f"Payment is already {payment.status}.")
         if payment.is_deadline_passed:
-            payment.status = Payment.Status.EXPIRED
-            payment.save(update_fields=['status'])
-            _expire_and_shift(payment.product, payment)
+            # Delegate the EXPIRED transition + bidder shift entirely to
+            # _expire_and_shift (single source of truth, run under a DB
+            # lock) instead of mutating status here and risking a second,
+            # inconsistent expiry path.
+            _expire_and_shift(payment.product)
             raise serializers.ValidationError("Payment deadline passed. Auction shifted to next bidder.")
         return value
 
 
 class PaymentDetailSerializer(serializers.ModelSerializer):
-    buyer_name         = serializers.CharField(source='buyer.username', read_only=True)
-    product_title      = serializers.CharField(source='product.title', read_only=True)
-    auction_end_time   = serializers.DateTimeField(source='product.auction_end_time', read_only=True)
-    deadline_remaining = serializers.SerializerMethodField()
-    deadline_seconds   = serializers.SerializerMethodField()
+    buyer_name            = serializers.CharField(source='buyer.username', read_only=True)
+    product_title         = serializers.CharField(source='product.title', read_only=True)
+    auction_end_time      = serializers.DateTimeField(source='product.auction_end_time', read_only=True)
+    deadline_remaining    = serializers.SerializerMethodField()
+    deadline_seconds      = serializers.SerializerMethodField()
+    winner_position       = serializers.ReadOnlyField()
+    previous_winner_name  = serializers.SerializerMethodField()
 
     class Meta:
         model  = Payment
@@ -380,9 +649,27 @@ class PaymentDetailSerializer(serializers.ModelSerializer):
             'countdown_start', 'payment_deadline',
             'auction_end_time',
             'deadline_remaining', 'deadline_seconds',
+            'winner_position', 'previous_winner_name',
             'created_at', 'paid_at',
             'buyer', 'product', 'winning_bid'
         ]
+
+    def get_previous_winner_name(self, obj):
+        """
+        For a Payment created by the Winner Payment Expiry / Bidder Shift
+        Logic (winner_position > 1), surface who held the win immediately
+        before this buyer — gives the Admin Dashboard "Previous winner /
+        New winner" visibility purely through existing list endpoints,
+        with no new UI required.
+        """
+        if obj.winner_position <= 1:
+            return None
+        prev = Payment.objects.filter(
+            product=obj.product,
+            status=Payment.Status.EXPIRED,
+            created_at__lt=obj.created_at,
+        ).order_by('-created_at').first()
+        return prev.buyer.username if prev else None
 
     def get_deadline_remaining(self, obj):
         if obj.payment_deadline and obj.status == Payment.Status.PENDING:

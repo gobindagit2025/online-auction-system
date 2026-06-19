@@ -333,7 +333,7 @@ class CheckDeadlineView(APIView):
         ).first()
 
         if payment and payment.is_deadline_passed:
-            _expire_and_shift(product, payment)
+            _expire_and_shift(product)
             # Fetch new pending payment for next bidder (if any)
             new_payment = Payment.objects.filter(
                 product=product, status=Payment.Status.PENDING
@@ -385,7 +385,7 @@ class WinnerCountdownView(APIView):
 
         # Auto-check deadline on every fetch
         if payment.is_deadline_passed:
-            _expire_and_shift(product, payment)
+            _expire_and_shift(product)
             new_payment = Payment.objects.filter(
                 product=product, status=Payment.Status.PENDING
             ).first()

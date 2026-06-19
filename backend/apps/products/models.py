@@ -17,8 +17,16 @@ class Product(models.Model):
     class Status(models.TextChoices):
         PENDING = 'PENDING', 'Pending'       # Auction not started yet
         ACTIVE = 'ACTIVE', 'Active'          # Auction is live
-        CLOSED = 'CLOSED', 'Closed'          # Auction ended
+        CLOSED = 'CLOSED', 'Closed'          # Auction ended (sold / payment pending)
         CANCELLED = 'CANCELLED', 'Cancelled' # Cancelled by seller/admin
+        UNSOLD = 'UNSOLD', 'Unsold'          # Closed, but every bidder's payment
+                                              # window expired — no eligible
+                                              # bidder remains (Winner Payment
+                                              # Expiry / Bidder Shift Logic).
+                                              # Same underlying CharField/column
+                                              # as the statuses above — no DB
+                                              # schema change, purely a new
+                                              # Python-level enum value.
 
     # Seller who posted the product
     seller = models.ForeignKey(
